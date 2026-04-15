@@ -1,0 +1,63 @@
+# regression_monkey_config.toml
+# 规格曲线分析配置文件
+#
+# 用法：
+#   uv run regression_monkey.py                         # 自动加载本文件（同目录）
+#   uv run regression_monkey.py regression_monkey_config.toml  # 显式指定路径
+#   uv run regression_monkey.py other.toml --dpi 600    # 命令行参数覆盖配置
+
+# ── 数据 ──────────────────────────────────────────────────────
+data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my_data/data/final/winsored.dta"
+
+# ── 变量 ──────────────────────────────────────────────────────
+# Fanalyst_error_keepfirst_30 Fanalyst_dispersion_keepfirst_30 Fanalyst_error_keepfirst_60 Fanalyst_dispersion_keepfirst_60 Fanalyst_error_keepfirst_90 Fanalyst_dispersion_keepfirst_90
+# FCAR_0_1 FCAR_2_61 FSpeed Fpostfiling_rmse
+# FAATT FPATT FMATT FMPATT FATT
+# Fminority
+
+y = ["CAR_0_1", "CAR_2_61", "Speed", "postfiling_rmse"]          # 被解释变量（可多个，与 x 两两组合）, "FAATT", "FPATT"
+x = ["ln_info", "ln_quant", "ln_qual"]                                # 主解释变量（可多个）, "ln_quant", "ln_qual"
+controls_test = [
+    "Big4", "Top1",
+    "ListAge1", "Dual", "Indep", "Opinion", "Shares", # "INST"
+]  # 参与 2^K 组合枚举的控制变量，建议不超过12个，否则耗时会指数级增加
+controls_must = ["Lev", "Size", "ROA", "SOE"]  # 强制纳入回归、但不参与组合枚举的控制变量
+
+# ── 输出 ──────────────────────────────────────────────────────
+# output 为输出目录；程序会在其中自动创建时间戳子目录，并固定导出 PNG
+output = "outputs"
+dpi = 300
+fig_width = 14
+n_jobs = 0
+
+# ── 固定效应变量标识符 ────────────────────────────────────────
+Firm_FE   = "code"   # 个体（企业）固定效应列名
+Ind_FE    = "ind"    # 行业固定效应列名
+Time_FE   = "year"   # 时间固定效应列名
+Region_FE = "pref"   # 地区固定效应列名（县级：city、地级：pref、省级：prov）
+
+# ── 自动模式：规格开关（设为 true 则启用对应 FE+VCE 组合） ───
+# 注意：这里必须使用 Python 脚本的 argparse dest 名，也就是下划线命名。
+# 可同时启用多个，每个生成一张图。
+
+absorb_firm_time_vce_cluster_firm = true                 # absorb(Firm Time)                         vce(cluster Firm)      — 个体+年度FE，会计实证默认基准
+absorb_firm_indtime_vce_cluster_firm = true              # absorb(Firm i.Ind#i.Time)                 vce(cluster Firm)      — 行业×年度FE
+
+
+absorb_firm_time_vce_cluster_ind = false                 # absorb(Firm Time)                         vce(cluster Ind)       — 行业层面聚类
+absorb_firm_time_vce_cluster_region = false              # absorb(Firm Time)                         vce(cluster Region)    — 地区层面聚类（需 Region_FE）
+absorb_firm_time_vce_cluster_firm_time = false           # absorb(Firm Time)                         vce(cluster Firm Time) — CGM双向聚类
+absorb_firm_time_vce_robust = false                      # absorb(Firm Time)                         vce(robust)            — 个体+年度FE，异方差稳健标准误
+
+absorb_ind_time_vce_cluster_firm = false                 # absorb(Ind Time)                          vce(cluster Firm)      — 行业+年度FE，公司聚类
+absorb_ind_time_vce_robust = false                       # absorb(Ind Time)                          vce(robust)            — 行业+年度FE，异方差稳健标准误
+
+
+absorb_firm_indtime_vce_robust = false                   # absorb(Firm i.Ind#i.Time)                 vce(robust)            — 行业×年度FE，异方差稳健标准误
+absorb_firm_regiontime_vce_cluster_firm = false          # absorb(Firm i.Region#i.Time)              vce(cluster Firm)      — 地区×年度FE（需 Region_FE）
+absorb_firm_regiontime_vce_robust = false                # absorb(Firm i.Region#i.Time)              vce(robust)            — 地区×年度FE，异方差稳健标准误（需 Region_FE）
+absorb_firm_indtime_regiontime_vce_cluster_firm = false  # absorb(Firm i.Ind#i.Time i.Region#i.Time) vce(cluster Firm)      — 双重剥离（需 Region_FE）
+absorb_firm_indtime_regiontime_vce_robust = false        # absorb(Firm i.Ind#i.Time i.Region#i.Time) vce(robust)            — 双重剥离，异方差稳健标准误（需 Region_FE）
+
+absorb_ind_region_time_vce_cluster_ind = false           # absorb(Ind Time Region)                   vce(cluster Ind)       — 三向FE（需 Region_FE）
+absorb_ind_region_time_vce_robust = false                # absorb(Ind Time Region)                   vce(robust)            — 三向FE，异方差稳健标准误（需 Region_FE）

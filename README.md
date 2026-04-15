@@ -1,0 +1,272 @@
+# regression_monkey
+
+作者：`zhaoxun@sjtu`
+
+这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。脚本会枚举控制变量的全部 `2^K` 种子集组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出图片与显著性汇总表。
+
+整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
+
+## 项目文件
+
+- `regression_monkey.py`：主脚本
+- `regression_monkey_config.toml`：推荐使用的配置文件
+- `run_regression_monkey.sh`：示例启动脚本
+
+## 运行环境
+
+项目基于 `uv` 运行，不需要单独维护 `pyproject.toml`。
+
+主要依赖：
+
+- `numpy`
+- `pandas`
+- `matplotlib`
+- `pyreadstat`
+
+## 主要使用方式：配置文件驱动的自动模式
+
+推荐把变量、固定效应标识符和规格开关都写在 `regression_monkey_config.toml` 中，然后直接运行：
+
+```bash
+uv run regression_monkey.py
+```
+
+如果配置文件不在脚本同目录，也可以显式指定：
+
+```bash
+uv run regression_monkey.py regression_monkey_config.toml
+```
+
+命令行仍然可以覆盖配置文件中的参数，例如：
+
+```bash
+uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
+```
+
+这种方式最适合日常批量运行，因为：
+
+- 规格组合集中写在 TOML 中，便于复现
+- 多个 `y × x` 组合可以一次性批量执行
+- 输出目录里会自动保存本次运行的 `config_snapshot.toml`
+
+## 输入数据
+
+支持以下格式：
+
+- `.dta`
+- `.csv`
+- `.parquet`
+- `.pq`
+
+支持多个 `y` 和多个 `x`。程序会自动遍历全部 `y × x` 组合。
+
+## 自动模式
+
+自动模式是当前推荐的主要工作流。你通常只需要维护 `regression_monkey_config.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
+
+### 配置文件示例
+
+```toml
+data = "path/to/data.dta"
+y = ["MPATT"]
+x = ["ln_info", "ln_quant", "ln_qual"]
+controls = ["Lev", "Size", "ROA"]
+
+output = "outputs"
+dpi = 300
+fig_width = 14
+n_jobs = 0
+
+Firm_FE = "code"
+Ind_FE = "ind"
+Time_FE = "year"
+Region_FE = "pref"
+
+absorb_firm_time_vce_cluster_firm = true
+absorb_firm_time_vce_robust = false
+absorb_firm_indtime_vce_cluster_firm = true
+absorb_ind_time_vce_cluster_firm = true
+```
+
+### 配置文件相关说明
+
+- TOML 中的规格开关必须使用下划线命名，例如 `absorb_firm_time_vce_cluster_firm`
+- CLI 参数使用连字符形式，例如 `--absorb-firm-time-vce-cluster-firm`
+- 配置快照只会保留本次运行中实际启用的规格项
+- `n_jobs = 0` 表示自动并行，程序会尽量使用更多核，但最多使用 9 核
+
+### 纯命令行启动示例
+
+如果你不想依赖 TOML，也可以直接从 CLI 启用自动规格：
+
+```bash
+uv run regression_monkey.py --data panel.dta \
+  --y MPATT \
+  --x ln_info ln_quant ln_qual \
+  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --Firm-FE code --Ind-FE ind --Time-FE year --Region-FE pref \
+  --absorb-firm-time-vce-cluster-firm \
+  --absorb-firm-time-vce-robust \
+  --absorb-firm-indtime-vce-cluster-firm \
+  --absorb-ind-time-vce-cluster-firm
+```
+
+当前支持的预定义规格包括：
+
+- `absorb_firm_time_vce_cluster_firm`
+- `absorb_firm_time_vce_robust`
+- `absorb_firm_indtime_vce_cluster_firm`
+- `absorb_firm_indtime_vce_robust`
+- `absorb_firm_regiontime_vce_cluster_firm`
+- `absorb_firm_regiontime_vce_robust`
+- `absorb_firm_indtime_regiontime_vce_cluster_firm`
+- `absorb_firm_indtime_regiontime_vce_robust`
+- `absorb_firm_time_vce_cluster_region`
+- `absorb_firm_time_vce_cluster_ind`
+- `absorb_ind_region_time_vce_cluster_ind`
+- `absorb_ind_region_time_vce_robust`
+- `absorb_firm_time_vce_cluster_firm_time`
+- `absorb_ind_time_vce_cluster_firm`
+- `absorb_ind_time_vce_robust`
+
+### 手动模式
+
+如果不启用任何自动规格，也可以直接手动指定固定效应列和聚类列。
+
+示例：
+
+```bash
+uv run regression_monkey.py --data panel.dta \
+  --y MPATT \
+  --x ln_info \
+  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --fe ind year \
+  --clust code
+```
+
+自动生成第二聚类变量：
+
+```bash
+uv run regression_monkey.py --data panel.dta \
+  --y MPATT \
+  --x ln_info \
+  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --fe ind year \
+  --clust code \
+  --gen-clust2
+```
+
+## 输出结果
+
+每次运行都会在 `output` 指定目录下自动创建时间戳子目录，例如：
+
+```text
+outputs/20260414_174122/
+```
+
+目录中通常包括：
+
+- `config_snapshot.toml`：本次运行的有效配置快照
+- 多张 PNG 图片：每个 `y × x × 规格` 对应一张图
+- `sig.csv`：全运行合并后的显著性汇总表
+
+### 图片命名
+
+默认图片名格式为：
+
+```text
+<y>_<x>_<规格标签>.png
+```
+
+其中自动规格的固定效应标签统一带有 `_ab_` 前缀，例如：
+
+- `MPATT_ln_info_ab_firm_time_cl_firm.png`
+- `MPATT_ln_info_ab_firm_time_robust.png`
+- `MPATT_ln_info_ab_ind_time_cl_firm.png`
+
+### 图片内容
+
+当前图片是一个多面板输出，包含：
+
+- 标题面板：显示 `Regression Monkey`、`Y/X`、`specs/controls`、`absorb/vce`、`controls_must`
+- 系数面板：主解释变量点估计，以及 90% / 95% / 99% 置信区间带
+- 控制变量矩阵：显示每个 `controls_test` 是否被纳入
+- 描述性统计面板：显示 `obs` 的均值、分位数等
+- `Obs` 面板：按系数正负着色的连续区域图
+
+图形约定如下：
+
+- 置信区间保持灰阶：
+  - 99% CI：浅灰
+  - 95% CI：灰
+  - 90% CI：深灰
+- 系数点按显著性着色：
+  - `p < 0.01`：黄色
+  - `p < 0.05`：绿色
+  - `p < 0.10`：蓝色
+  - 不显著：黑色
+- 三类特殊规格使用同一套“实心点 + 彩色外圈 + 同色竖线”样式：
+  - 全控制变量规格：红色
+  - 无 `controls_test` 规格：橙色
+  - 系数最接近 0 的规格：蓝色
+- 控制变量矩阵带有黑色整体外框、黑色行分隔线，并同步标出红 / 橙 / 蓝三类竖线
+- `Obs` 面板不再使用条形图，而是连续区域图：
+  - 正系数区域：半透明红色
+  - 负系数区域：半透明蓝色
+  - 同步标出红 / 橙 / 蓝三类竖线
+
+### 显著性汇总表
+
+程序会把本次全部运行结果中的显著规格合并导出为：
+
+```text
+<output_dir>/<timestamp>/sig.csv
+```
+
+字段包括：
+
+- `Star`
+- `coef`
+- `obs`
+- `Y`
+- `X`
+- `Controls`
+- `FE`
+- `cluster`
+- `N`
+
+其中：
+
+- `Star = 3 / 2 / 1` 表示正系数分别在 99% / 95% / 90% 水平显著
+- `Star = -3 / -2 / -1` 表示负系数分别在 99% / 95% / 90% 水平显著
+- 当标准误类型为 `vce(robust)` 时，`cluster` 列会显示为 `robust`
+
+终端中的汇总输出也会按带符号的显著性等级分别报告，例如：
+
+```text
+[汇总表] 128/768 个规格显著（+3:0  +2:128  +1:0  -1:0  -2:0  -3:0）
+```
+
+## 性能说明
+
+程序的主要耗时来自对 `2^K` 个控制变量组合的穷举。若控制变量个数为 12，则单个规格需要估计 `4096` 个回归。
+
+当前代码已经包含以下性能优化：
+
+- 固定效应残差化后再枚举规格
+- 小任务自动避免无收益并行
+- 优先使用更低启动成本的 multiprocessing 上下文
+- 自动并行时使用扁平化 chunk 调度，避免嵌套 `multiprocessing.Pool`
+- 延迟导入 Matplotlib，避免 worker 启动时重复加载绘图库
+- 控制变量矩阵使用栅格化绘图，减少大量 patch 带来的渲染开销
+- 预计算 Gram 矩阵与 `Z'y`，降低每个子规格的 OLS 求解成本
+- 限制底层 BLAS 线程数，避免“多进程 × 多线程”抢占 CPU
+
+如果希望更稳定地观察运行状态，可以注意终端中的进度输出。枚举规格时程序会打印总任务块数，并周期性输出进度百分比。
+
+## 结果解释与注意事项
+
+- 自动模式下，程序会在需要时自动生成交互固定效应列，例如 `ind#year` 或 `region#year`
+- 每个规格会基于 `y`、`x`、`controls_test`、`controls_must`、固定效应列和聚类列对应的数据进行缺失值处理
+- 所有规格在绘图前会按主解释变量系数从小到大排序
+- 开启更多规格，尤其是 `vce_robust` 或 CGM 双向聚类规格时，总耗时会明显上升
