@@ -70,7 +70,8 @@ uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
 data = "path/to/data.dta"
 y = ["MPATT"]
 x = ["ln_info", "ln_quant", "ln_qual"]
-controls = ["Lev", "Size", "ROA"]
+controls_test = ["SOE", "Big4", "Top1"]
+controls_must = ["Lev", "Size", "ROA"]
 
 output = "outputs"
 dpi = 300
@@ -103,7 +104,8 @@ absorb_ind_time_vce_cluster_firm = true
 uv run regression_monkey.py --data panel.dta \
   --y MPATT \
   --x ln_info ln_quant ln_qual \
-  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --controls-must Lev Size ROA \
+  --controls-test SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
   --Firm-FE code --Ind-FE ind --Time-FE year --Region-FE pref \
   --absorb-firm-time-vce-cluster-firm \
   --absorb-firm-time-vce-robust \
@@ -139,7 +141,8 @@ uv run regression_monkey.py --data panel.dta \
 uv run regression_monkey.py --data panel.dta \
   --y MPATT \
   --x ln_info \
-  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --controls-must Lev Size ROA \
+  --controls-test SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
   --fe ind year \
   --clust code
 ```
@@ -150,7 +153,8 @@ uv run regression_monkey.py --data panel.dta \
 uv run regression_monkey.py --data panel.dta \
   --y MPATT \
   --x ln_info \
-  --controls Lev Size ROA SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
+  --controls-must Lev Size ROA \
+  --controls-test SOE Big4 Top1 ln_age Dual Indep Opinion BM Shares \
   --fe ind year \
   --clust code \
   --gen-clust2
@@ -188,11 +192,11 @@ outputs/20260414_174122/
 
 当前图片是一个多面板输出，包含：
 
-- 标题面板：显示 `Regression Monkey`、`Y/X`、`specs/controls`、`absorb/vce`、`controls_must`
+- 标题面板：显示 `Regression Monkey`、`Y/X`、`specs/controls`、`absorb/vce`、`controls_must`、单图全过程耗时
 - 系数面板：主解释变量点估计，以及 90% / 95% / 99% 置信区间带
 - 控制变量矩阵：显示每个 `controls_test` 是否被纳入
 - 描述性统计面板：显示 `obs` 的均值、分位数等
-- `Obs` 面板：按系数正负着色的连续区域图
+- `Obs` 面板：按系数正负着色的条形图
 
 图形约定如下：
 
@@ -208,11 +212,14 @@ outputs/20260414_174122/
 - 三类特殊规格使用同一套“实心点 + 彩色外圈 + 同色竖线”样式：
   - 全控制变量规格：红色
   - 无 `controls_test` 规格：橙色
-  - 系数最接近 0 的规格：蓝色
+  - 系数最接近 0 的规格：蓝色，仅当系数序列跨过 `0` 时才绘制
+- 红色 `Full controls` 特殊点后绘制，覆盖在普通点、橙色点和蓝色点之上
 - 控制变量矩阵带有黑色整体外框、黑色行分隔线，并同步标出红 / 橙 / 蓝三类竖线
-- `Obs` 面板不再使用条形图，而是连续区域图：
-  - 正系数区域：半透明红色
-  - 负系数区域：半透明蓝色
+- `Obs` 面板当前为条形图：
+  - 正系数规格：半透明红色条
+  - 负系数规格：半透明蓝色条
+  - 灰色虚线表示 `obs` 均值
+  - 左侧刻度显示 `min / mean / max`，保留两位小数
   - 同步标出红 / 橙 / 蓝三类竖线
 
 ### 显著性汇总表
@@ -233,13 +240,15 @@ outputs/20260414_174122/
 - `Controls`
 - `FE`
 - `cluster`
-- `N`
+- `Specs`
 
 其中：
 
 - `Star = 3 / 2 / 1` 表示正系数分别在 99% / 95% / 90% 水平显著
 - `Star = -3 / -2 / -1` 表示负系数分别在 99% / 95% / 90% 水平显著
 - 当标准误类型为 `vce(robust)` 时，`cluster` 列会显示为 `robust`
+- `Controls` 列严格按输入顺序导出：先 `controls_must`，后 `controls_test`
+- `Specs` 表示当前这一轮对应的规格总数
 
 终端中的汇总输出也会按带符号的显著性等级分别报告，例如：
 
@@ -258,6 +267,21 @@ outputs/20260414_174122/
 - 优先使用更低启动成本的 multiprocessing 上下文
 - 自动并行时使用扁平化 chunk 调度，避免嵌套 `multiprocessing.Pool`
 - 延迟导入 Matplotlib，避免 worker 启动时重复加载绘图库
+
+## Stata 批处理模式
+
+仓库还提供 `regression_monkey_stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎：
+
+```bash
+uv run regression_monkey_stata.py regression_monkey_config.toml
+```
+
+这一模式下：
+
+- Python 负责生成 `.do` 文件、调用 Stata、读取结果并复用同一套绘图逻辑
+- `absorb()` 和 `vce()` 直接写成 `reghdfe` 形式，例如 `absorb(i.code i.year#i.ind)`
+- 每个规格的 `obs` 由 `reghdfe` 基于该规格的有效样本自动决定，不会因为 `controls_test` 被统一提前删样本
+- 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
 - 控制变量矩阵使用栅格化绘图，减少大量 patch 带来的渲染开销
 - 预计算 Gram 矩阵与 `Z'y`，降低每个子规格的 OLS 求解成本
 - 限制底层 BLAS 线程数，避免“多进程 × 多线程”抢占 CPU

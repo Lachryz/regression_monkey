@@ -15,13 +15,13 @@ data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my
 # FAATT FPATT FMATT FMPATT FATT
 # Fminority
 
-y = ["CAR_0_1", "CAR_2_61", "Speed", "postfiling_rmse"]          # 被解释变量（可多个，与 x 两两组合）, "FAATT", "FPATT"
-x = ["ln_info", "ln_quant", "ln_qual"]                                # 主解释变量（可多个）, "ln_quant", "ln_qual"
+y = ["Speed"]          # 被解释变量（可多个，与 x 两两组合）, "FAATT", "FPATT"
+x = ["ln_info", "ln_qual", "ln_quant"]                                # 主解释变量（可多个）, "ln_quant", "ln_qual"
 controls_test = [
     "Big4", "Top1",
-    "ListAge1", "Dual", "Indep", "Opinion", "Shares", # "INST"
+    "ListAge1", "Dual", "Indep", "Opinion", "Shares", "INST",
 ]  # 参与 2^K 组合枚举的控制变量，建议不超过12个，否则耗时会指数级增加
-controls_must = ["Lev", "Size", "ROA", "SOE"]  # 强制纳入回归、但不参与组合枚举的控制变量
+controls_must = ["Lev", "Size", "ROA", "SOE", "cnt_char", "readability"]  # 强制纳入回归、但不参与组合枚举的控制变量
 
 # ── 输出 ──────────────────────────────────────────────────────
 # output 为输出目录；程序会在其中自动创建时间戳子目录，并固定导出 PNG
