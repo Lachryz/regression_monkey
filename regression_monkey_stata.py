@@ -341,7 +341,6 @@ def main() -> None:
         parser.error(str(exc))
     varying_must_controls = rm._varying_must_controls(controls_must_slots)
     matrix_controls = varying_must_controls + controls_test_flat
-    show_special_markers = not varying_must_controls
     if not args.data or not args.y or not args.x:
         parser.error("必须提供 data / y / x（可通过 TOML 或 CLI 指定）")
     if not controls_test and not controls_must:
@@ -401,11 +400,14 @@ def main() -> None:
     combos = list(itertools.product(args.y, args.x))
     all_sig_rows: list[dict[str, Any]] = []
     total_sig_specs = 0
+    combo_summaries: list[dict[str, Any]] = []
 
     for idx, (y_var, x_var) in enumerate(combos, 1):
         print(f"\n{'#'*60}")
         print(f"[{idx}/{len(combos)}]  Y = {y_var}  ×  X = {x_var}")
         print("#" * 60)
+        pair_sig_rows: list[dict[str, Any]] = []
+        pair_total_specs = 0
         for spec_def in rm._SPEC_CATALOG:
             spec_t0 = perf_counter()
             spec_name = spec_def["name"]
@@ -454,7 +456,7 @@ def main() -> None:
                 controls_test=controls_test_flat,
                 controls_must=controls_must_flat,
                 matrix_controls=matrix_controls,
-                show_special_markers=show_special_markers,
+                show_special_markers=True,
                 fig_width=args.fig_width,
                 dpi=args.dpi,
                 output_path=str(out_png),
@@ -463,30 +465,45 @@ def main() -> None:
             )
             fe_cols = _spec_fe_labels(spec_def, var_map)
             clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
-            all_sig_rows.extend(
-                rm._build_sig_rows(
-                    records=records,
-                    y=y_var,
-                    x=x_var,
-                    controls_must=controls_must_flat,
-                    controls_test=controls_test_flat,
-                    fe_cols=fe_cols,
-                    clust_cols=clust_cols,
-                    vce_label="robust" if spec_def["vce"] == "robust" else None,
-                )
+            pair_rows = rm._build_sig_rows(
+                records=records,
+                y=y_var,
+                x=x_var,
+                controls_must=controls_must_flat,
+                controls_test=controls_test_flat,
+                fe_cols=fe_cols,
+                clust_cols=clust_cols,
+                vce_label="robust" if spec_def["vce"] == "robust" else None,
             )
+            all_sig_rows.extend(pair_rows)
+            pair_sig_rows.extend(pair_rows)
             total_sig_specs += len(records)
+            pair_total_specs += len(records)
 
             if not args.keep_temp:
                 _safe_unlink(do_path)
                 _safe_unlink(log_path)
                 _safe_unlink(dta_result_path)
 
+        combo_summaries.append({
+            "y": y_var,
+            "x": x_var,
+            "n_specs": pair_total_specs,
+            "n_sig": len(pair_sig_rows),
+            "star_counts": rm._sig_star_counts(pair_sig_rows),
+        })
+
     rm._export_sig_table(
         rows=all_sig_rows,
         output_path=str(run_output_dir / "sig.csv"),
         n_specs=total_sig_specs,
+        print_summary=False,
     )
+    for summary in combo_summaries:
+        print(
+            f"Y = {summary['y']}  ×  X = {summary['x']} "
+            f"{rm._format_sig_summary(summary['n_sig'], summary['n_specs'], summary['star_counts'])}"
+        )
     if not args.keep_temp and dta_path != data_path:
         _safe_unlink(dta_path)
 

@@ -1052,7 +1052,6 @@ def regression_monkey(
     controls_test_flat, test_slots = _normalize_controls_test(controls_test)
     varying_must_controls = _varying_must_controls(must_slots)
     matrix_controls = varying_must_controls + controls_test_flat
-    show_special_markers = not varying_must_controls
     N = len(df)
     y_arr = df[y].to_numpy()
     x_arr = df[x].to_numpy()
@@ -1103,7 +1102,7 @@ def regression_monkey(
     fig = _plot(records, y_name=y, x_name=x, controls_test=controls_test_flat,
                 controls_must=controls_must_flat,
                 matrix_controls=matrix_controls,
-                show_special_markers=show_special_markers,
+                show_special_markers=True,
                 fig_width=fig_width, dpi=dpi,
                 output_path=output_path, title_suffix=title_suffix,
                 elapsed_seconds_preplot=perf_counter() - total_t0)
@@ -1181,7 +1180,6 @@ def regression_monkey_auto(
     controls_test_flat, test_slots = _normalize_controls_test(controls_test)
     varying_must_controls = _varying_must_controls(must_slots)
     matrix_controls = varying_must_controls + controls_test_flat
-    show_special_markers = not varying_must_controls
 
     # 基础变量名映射（"逻辑键" → 实际列名）
     base_var_map: dict[str, str] = {
@@ -1423,7 +1421,7 @@ def regression_monkey_auto(
             controls_test = controls_test_flat,
             controls_must = controls_must_flat,
             matrix_controls = matrix_controls,
-            show_special_markers = show_special_markers,
+            show_special_markers = True,
             fig_width     = fig_width,
             dpi           = dpi,
             output_path   = meta["out_i"],
@@ -1562,8 +1560,10 @@ def _sig_star_counts(rows: list[dict[str, Any]]) -> dict[int, int]:
 
 def _format_sig_summary(n_sig: int, n_specs: int, star_counts: dict[int, int]) -> str:
     """格式化终端中的显著性汇总文本。"""
+    if n_sig == 0:
+        return "无 90% 及以上显著的规格"
     return (
-        f"[汇总表] {n_sig}/{n_specs} 个规格显著"
+        f"{n_sig}/{n_specs} 个规格显著"
         f"（+3:{star_counts[3]}  +2:{star_counts[2]}  +1:{star_counts[1]}  "
         f"-1:{star_counts[-1]}  -2:{star_counts[-2]}  -3:{star_counts[-3]}）"
     )
@@ -2445,10 +2445,9 @@ def main() -> None:
         print_summary=False,
     )
 
-    print("\n各 Y-X 组合显著性汇总：")
     for summary in combo_summaries:
         print(
-            f"  Y={summary['y']}  X={summary['x']}  "
+            f"Y = {summary['y']}  ×  X = {summary['x']} "
             f"{_format_sig_summary(summary['n_sig'], summary['n_specs'], summary['star_counts'])}"
         )
     print(f"\n全部完成：{n_combos} 个 y×x 组合")

@@ -2,7 +2,7 @@
 
 作者：`zhaoxun@sjtu`
 
-这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。脚本会枚举控制变量的全部 `2^K` 种子集组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出图片与显著性汇总表。
+这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。脚本会枚举控制变量的全部合法组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出图片与显著性汇总表。
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
 
@@ -60,6 +60,49 @@ uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
 
 支持多个 `y` 和多个 `x`。程序会自动遍历全部 `y × x` 组合。
 
+## 控制变量的混合结构
+
+`controls_test` 和 `controls_must` 现在都支持在 TOML / Python API 中使用混合结构：
+
+- 普通字符串：表示单个变量
+- 嵌套 list：表示一个互斥替代组
+
+两者语义不同：
+
+- `controls_must`
+  - 嵌套组表示“必须包含其中之一”
+  - 例如 `controls_must = ["Lev", ["ROA", "ROE"]]`
+  - 每个规格都必须带 `ROA` 或 `ROE` 其中一个，不能两个都没有，也不能两个同时出现
+  - 本质上相当于增加一个必选控制槽位，因此规格数乘以组大小
+
+- `controls_test`
+  - 嵌套组表示“最多出现其中一个”
+  - 例如 `controls_test = ["Big4", ["ListAge1", "FirmAge1"]]`
+  - 每个规格可以选 `ListAge1`、或 `FirmAge1`、或两个都不选，但不能同时选两个
+  - 本质上相当于一个可选控制槽位，因此规格数乘以 `组大小 + 1`
+
+示例：
+
+```toml
+controls_test = [
+  "Big4",
+  ["ListAge1", "FirmAge1"],
+  "Top1"
+]
+
+controls_must = [
+  "Lev",
+  "Size",
+  ["ROA", "ROE"],
+  "SOE"
+]
+```
+
+注意：
+
+- CLI 的 `--controls-test` / `--controls-must` 仍然只能传平铺变量名
+- 如果需要混合结构，请使用 `regression_monkey_config.toml` 或 Python API
+
 ## 自动模式
 
 自动模式是当前推荐的主要工作流。你通常只需要维护 `regression_monkey_config.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
@@ -70,8 +113,8 @@ uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
 data = "path/to/data.dta"
 y = ["MPATT"]
 x = ["ln_info", "ln_quant", "ln_qual"]
-controls_test = ["SOE", "Big4", "Top1"]
-controls_must = ["Lev", "Size", "ROA"]
+controls_test = ["SOE", "Big4", ["ListAge1", "FirmAge1"]]
+controls_must = ["Lev", "Size", ["ROA", "ROE"]]
 
 output = "outputs"
 dpi = 300
@@ -194,7 +237,7 @@ outputs/20260414_174122/
 
 - 标题面板：显示 `Regression Monkey`、`Y/X`、`specs/controls`、`absorb/vce`、`controls_must`、单图全过程耗时
 - 系数面板：主解释变量点估计，以及 90% / 95% / 99% 置信区间带
-- 控制变量矩阵：显示每个 `controls_test` 是否被纳入
+- 控制变量矩阵：显示每个会随规格变化的控制变量是否被纳入
 - 描述性统计面板：显示 `obs` 的均值、分位数等
 - `Obs` 面板：按系数正负着色的条形图
 
@@ -214,6 +257,9 @@ outputs/20260414_174122/
   - 无 `controls_test` 规格：橙色
   - 系数最接近 0 的规格：蓝色，仅当系数序列跨过 `0` 时才绘制
 - 红色 `Full controls` 特殊点后绘制，覆盖在普通点、橙色点和蓝色点之上
+- 控制变量矩阵中会显示所有会变化的控制变量：
+  - 全部 `controls_test`
+  - `controls_must` 中以嵌套 list 给出的替代组成员
 - 控制变量矩阵带有黑色整体外框、黑色行分隔线，并同步标出红 / 橙 / 蓝三类竖线
 - `Obs` 面板当前为条形图：
   - 正系数规格：半透明红色条
@@ -250,15 +296,23 @@ outputs/20260414_174122/
 - `Controls` 列严格按输入顺序导出：先 `controls_must`，后 `controls_test`
 - `Specs` 表示当前这一轮对应的规格总数
 
-终端中的汇总输出也会按带符号的显著性等级分别报告，例如：
+终端中的汇总输出会在全部回归结束后，按 `Y × X` 组合统一报告，例如：
 
 ```text
-[汇总表] 128/768 个规格显著（+3:0  +2:128  +1:0  -1:0  -2:0  -3:0）
+Y = FAATT  ×  X = ln_info 51/768 个规格显著（+3:0  +2:0  +1:0  -1:51  -2:0  -3:0）
+Y = FAATT  ×  X = ln_qual 无 90% 及以上显著的规格
 ```
 
 ## 性能说明
 
-程序的主要耗时来自对 `2^K` 个控制变量组合的穷举。若控制变量个数为 12，则单个规格需要估计 `4096` 个回归。
+程序的主要耗时来自对控制变量组合的穷举。若全部都是普通 `controls_test` 变量且个数为 12，则单个规格需要估计 `4096` 个回归；混合结构时，总规格数取决于各控制槽位的乘积。
+
+更准确地说：
+
+- 普通 `controls_test` 变量：每个贡献 `×2`
+- `controls_test` 替代组，大小为 `g`：贡献 `×(g+1)`
+- 普通 `controls_must` 变量：贡献 `×1`
+- `controls_must` 替代组，大小为 `g`：贡献 `×g`
 
 当前代码已经包含以下性能优化：
 
@@ -281,6 +335,7 @@ uv run regression_monkey_stata.py regression_monkey_config.toml
 - Python 负责生成 `.do` 文件、调用 Stata、读取结果并复用同一套绘图逻辑
 - `absorb()` 和 `vce()` 直接写成 `reghdfe` 形式，例如 `absorb(i.code i.year#i.ind)`
 - 每个规格的 `obs` 由 `reghdfe` 基于该规格的有效样本自动决定，不会因为 `controls_test` 被统一提前删样本
+- `controls_must` / `controls_test` 的混合结构语义与 Python 引擎保持一致
 - 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
 - 控制变量矩阵使用栅格化绘图，减少大量 patch 带来的渲染开销
 - 预计算 Gram 矩阵与 `Z'y`，降低每个子规格的 OLS 求解成本
