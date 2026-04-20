@@ -111,12 +111,22 @@ def _prepare_auto_dataframe(
     return df, base_var_map, fmt
 
 
-def _enumerate_control_subsets(controls_test: list[str]) -> list[tuple[int, list[str]]]:
-    subsets: list[tuple[int, list[str]]] = []
-    K = len(controls_test)
-    for bits in range(2 ** K):
-        chosen = [controls_test[j] for j in range(K) if (bits >> j) & 1]
-        subsets.append((bits, chosen))
+def _enumerate_control_specs(
+    controls_must_slots: list[rm.ControlSlot],
+    controls_test_slots: list[rm.ControlSlot],
+) -> list[tuple[int, list[str], list[str], bool]]:
+    """
+    枚举所有合法规格：
+    - controls_must: 每个槽位必须选一个
+    - controls_test: 每个槽位可不选，若为替代组则至多选一个
+    """
+    subsets: list[tuple[int, list[str], list[str], bool]] = []
+    total_specs = rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
+    for bits in range(total_specs):
+        rem, chosen_must_cols, chosen_must = rm._decode_required_choice(bits, controls_must_slots)
+        chosen_test_cols, chosen_test, is_full = rm._decode_optional_choice(rem, controls_test_slots)
+        _ = chosen_must_cols, chosen_test_cols
+        subsets.append((bits, chosen_must, chosen_test, is_full))
     return subsets
 
 
@@ -178,12 +188,14 @@ def _write_reghdfe_do(
     y: str,
     x: str,
     controls_must: list[str],
+    controls_must_slots: list[rm.ControlSlot],
     controls_test: list[str],
+    controls_test_slots: list[rm.ControlSlot],
     spec_def: dict[str, Any],
     var_map: dict[str, str],
 ) -> None:
     absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
-    subsets = _enumerate_control_subsets(controls_test)
+    subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
     lines = [
         "version 18.0",
         "clear all",
@@ -196,17 +208,18 @@ def _write_reghdfe_do(
         "}",
         f"use {_stata_quote(str(data_path))}, clear",
         f"tempname posth",
-        f'postfile `posth\' str128 spec_name long bits str2045 chosen_controls double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
+        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
     ]
 
-    for bits, chosen in subsets:
+    for bits, chosen_must, chosen_test, _is_full in subsets:
         rhs_terms = [x]
-        if controls_must:
-            rhs_terms.extend(controls_must)
-        if chosen:
-            rhs_terms.extend(chosen)
+        if chosen_must:
+            rhs_terms.extend(chosen_must)
+        if chosen_test:
+            rhs_terms.extend(chosen_test)
         rhs = " ".join(rhs_terms)
-        chosen_txt = "|".join(chosen)
+        chosen_must_txt = "|".join(chosen_must)
+        chosen_test_txt = "|".join(chosen_test)
         spec_name = spec_def["name"]
         lines.extend([
             f"* Run each spec on the full dataset currently in memory; do not pre-filter",
@@ -218,7 +231,7 @@ def _write_reghdfe_do(
             f"    scalar __se = _se[{x}]",
             "    scalar __N = e(N)",
             "    scalar __df = e(df_r)",
-            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_txt)}) (__b) (__se) (__N) (__df)',
+            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) (__b) (__se) (__N) (__df)',
             "}",
         ])
 
@@ -245,20 +258,22 @@ def _safe_unlink(path: pathlib.Path) -> None:
 
 def _records_from_stata_dta(
     dta_path: pathlib.Path,
-    controls_test: list[str],
-    controls_must: list[str],
+    controls_must_slots: list[rm.ControlSlot],
+    controls_test_slots: list[rm.ControlSlot],
 ) -> list[rm.SpecRecord]:
     df_res = cast(pd.DataFrame, pd.read_stata(dta_path))
-    all_ctrl_set = set(controls_test)
-    must_ctrl_set = set(controls_must)
     records: list[rm.SpecRecord] = []
     for _, row in df_res.iterrows():
         coef = float(row["coef"])
         se = float(row["se"])
         obs = int(round(float(row["obs"])))
         df_resid = max(1, int(round(float(row["df_resid"]))))
-        chosen = [c for c in str(row["chosen_controls"]).split("|") if c]
-        chosen_set = set(chosen)
+        chosen_must = [c for c in str(row["chosen_must_controls"]).split("|") if c]
+        chosen_test = [c for c in str(row["chosen_test_controls"]).split("|") if c]
+        chosen_test_set = set(chosen_test)
+        chosen_all_set = set(chosen_must) | chosen_test_set
+        rem_bits, _, _ = rm._decode_required_choice(int(row["bits"]), controls_must_slots)
+        _, _, is_full = rm._decode_optional_choice(rem_bits, controls_test_slots)
         t_value = coef / se
         p_value = rm._p_value_from_t(abs(t_value), df_resid)
         crit99, crit95, crit90 = rm._crit_values(df_resid)
@@ -274,9 +289,9 @@ def _records_from_stata_dta(
             "ci95_hi": coef + crit95 * se,
             "ci90_lo": coef - crit90 * se,
             "ci90_hi": coef + crit90 * se,
-            "controls_test": chosen_set,
-            "controls_all": must_ctrl_set | chosen_set,
-            "is_full": chosen_set == all_ctrl_set,
+            "controls_test": chosen_test_set,
+            "controls_all": chosen_all_set,
+            "is_full": is_full,
             "obs": obs,
         })
     records.sort(key=lambda r: r["coef"])
@@ -319,6 +334,14 @@ def main() -> None:
     args = parser.parse_args(cli_args)
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
     controls_must = list(args.controls_must) if args.controls_must else []
+    try:
+        controls_test_flat, controls_test_slots = rm._normalize_controls_test(controls_test)
+        controls_must_flat, controls_must_slots = rm._normalize_controls_must(controls_must)
+    except ValueError as exc:
+        parser.error(str(exc))
+    varying_must_controls = rm._varying_must_controls(controls_must_slots)
+    matrix_controls = varying_must_controls + controls_test_flat
+    show_special_markers = not varying_must_controls
     if not args.data or not args.y or not args.x:
         parser.error("必须提供 data / y / x（可通过 TOML 或 CLI 指定）")
     if not controls_test and not controls_must:
@@ -359,7 +382,9 @@ def main() -> None:
         "y": list(args.y),
         "x": list(args.x),
         "controls_test": controls_test,
+        "controls_test_flat": controls_test_flat,
         "controls_must": controls_must,
+        "controls_must_flat": controls_must_flat,
         "output": str(output_root),
         "run_output_dir": str(run_output_dir),
         "dpi": args.dpi,
@@ -404,13 +429,19 @@ def main() -> None:
                 results_dta=dta_result_path,
                 y=y_var,
                 x=x_var,
-                controls_must=controls_must,
-                controls_test=controls_test,
+                controls_must=controls_must_flat,
+                controls_must_slots=controls_must_slots,
+                controls_test=controls_test_flat,
+                controls_test_slots=controls_test_slots,
                 spec_def=spec_def,
                 var_map=var_map,
             )
             _run_stata_do(args.stata_path, do_path, run_output_dir)
-            records = _records_from_stata_dta(dta_result_path, controls_test, controls_must)
+            records = _records_from_stata_dta(
+                dta_result_path,
+                controls_must_slots=controls_must_slots,
+                controls_test_slots=controls_test_slots,
+            )
             if not records:
                 print(f"[Stata] {spec_name} 未返回有效回归结果")
                 print(f"[Stata] 已保留调试文件：{do_path.name}, {log_path.name}, {dta_result_path.name}")
@@ -420,8 +451,10 @@ def main() -> None:
                 records=records,
                 y_name=y_var,
                 x_name=x_var,
-                controls_test=controls_test,
-                controls_must=controls_must,
+                controls_test=controls_test_flat,
+                controls_must=controls_must_flat,
+                matrix_controls=matrix_controls,
+                show_special_markers=show_special_markers,
                 fig_width=args.fig_width,
                 dpi=args.dpi,
                 output_path=str(out_png),
@@ -435,8 +468,8 @@ def main() -> None:
                     records=records,
                     y=y_var,
                     x=x_var,
-                    controls_must=controls_must,
-                    controls_test=controls_test,
+                    controls_must=controls_must_flat,
+                    controls_test=controls_test_flat,
                     fe_cols=fe_cols,
                     clust_cols=clust_cols,
                     vce_label="robust" if spec_def["vce"] == "robust" else None,

@@ -25,7 +25,7 @@ regression_monkey.py
 
 算法：
   1. FWL 定理：将所有变量对 N 向固定效应做迭代残差化（Gauss-Seidel）
-  2. 枚举所有 2^K 个控制变量子集，逐一 OLS 估计
+  2. 枚举所有合法控制变量组合（支持组内互斥替代），逐一 OLS 估计
   3. 双向聚类 SE（Cameron-Gelbach-Miller）或单向聚类 SE：
        SSC = G_min/(G_min-1) × (N-1)/(N-k)
        k = k_reg + k_fe_absorbed
@@ -43,7 +43,7 @@ import os
 import pathlib
 import platform
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict, cast
 import numpy as np
 import pandas as pd
 from scipy import linalg as sp_linalg
@@ -74,6 +74,8 @@ if TYPE_CHECKING:
 
 SeArgs = tuple[Any, ...]
 _MAX_AUTO_JOBS = 9
+ControlSlot: TypeAlias = tuple[str, ...]
+ControlSpecInput: TypeAlias = list[str | list[str] | tuple[str, ...]]
 
 
 class SpecRecord(TypedDict):
@@ -96,6 +98,138 @@ class SpecRecord(TypedDict):
 # ────────────────────────────────────────────────────────────
 # 内部工具函数
 # ────────────────────────────────────────────────────────────
+
+def _normalize_control_spec(
+    controls: ControlSpecInput,
+    *,
+    field_name: str,
+) -> tuple[list[str], list[ControlSlot]]:
+    """
+    将 controls 规范化为：
+    - flat_controls: 扁平变量顺序，用于画图、导出、缺失列检查
+    - control_slots: 枚举槽位；单变量槽位长度为 1，替代组槽位长度 >= 2
+    """
+    flat_controls: list[str] = []
+    control_slots: list[ControlSlot] = []
+    seen: set[str] = set()
+
+    for item in controls:
+        if isinstance(item, str):
+            slot = (item,)
+        elif isinstance(item, (list, tuple)):
+            if not item:
+                raise ValueError(f"{field_name} 中的替代组不能为空列表")
+            if not all(isinstance(v, str) and v for v in item):
+                raise ValueError(f"{field_name} 的替代组必须全部由非空字符串列名组成")
+            slot = tuple(item)
+        else:
+            raise ValueError(f"{field_name} 仅支持 str 或由 str 组成的 list/tuple")
+
+        dup = [name for name in slot if name in seen]
+        if dup:
+            raise ValueError(f"{field_name} 存在重复列名：{dup}")
+
+        control_slots.append(slot)
+        flat_controls.extend(slot)
+        seen.update(slot)
+
+    return flat_controls, control_slots
+
+
+def _normalize_controls_test(
+    controls_test: ControlSpecInput,
+) -> tuple[list[str], list[ControlSlot]]:
+    """
+    将 controls_test 规范化为扁平变量顺序和枚举槽位。
+
+    槽位语义为“至多选择一个”：
+    - "size" -> (none, size)
+    - ["SOE1", "SOE2"] -> (none, SOE1, SOE2)
+    """
+    return _normalize_control_spec(controls_test, field_name="controls_test")
+
+
+def _normalize_controls_must(
+    controls_must: ControlSpecInput,
+) -> tuple[list[str], list[ControlSlot]]:
+    """
+    将 controls_must 规范化为扁平变量顺序和枚举槽位。
+
+    槽位语义为“必须选择一个”：
+    - "size" -> (size)
+    - ["SOE1", "SOE2"] -> (SOE1, SOE2)
+    """
+    return _normalize_control_spec(controls_must, field_name="controls_must")
+
+
+def _varying_must_controls(must_slots: list[ControlSlot]) -> list[str]:
+    """返回 controls_must 中会随规格变化的变量（即替代组成员）。"""
+    varying: list[str] = []
+    for slot in must_slots:
+        if len(slot) > 1:
+            varying.extend(slot)
+    return varying
+
+
+def _spec_count_from_slots(
+    must_slots: list[ControlSlot],
+    test_slots: list[ControlSlot],
+) -> int:
+    """返回规格总数；must 槽位必须选一，test 槽位允许不选。"""
+    total_specs = 1
+    for slot in must_slots:
+        total_specs *= len(slot)
+    for slot in test_slots:
+        total_specs *= len(slot) + 1
+    return total_specs
+
+
+def _decode_required_choice(
+    bits: int,
+    control_slots: list[ControlSlot],
+) -> tuple[int, list[int], list[str]]:
+    """解码必须选择一个的槽位（用于 controls_must）。"""
+    chosen_cols: list[int] = []
+    chosen_names: list[str] = []
+    flat_idx = 0
+
+    for slot in control_slots:
+        radix = len(slot)
+        state = bits % radix
+        bits //= radix
+        chosen_cols.append(flat_idx + state)
+        chosen_names.append(slot[state])
+        flat_idx += len(slot)
+
+    return bits, chosen_cols, chosen_names
+
+
+def _decode_optional_choice(bits: int, control_slots: list[ControlSlot]) -> tuple[list[int], list[str], bool]:
+    """
+    解码可不选的槽位（用于 controls_test）。
+
+    返回：
+    - chosen_cols: ct_arr 中被选中的列索引
+    - chosen_names: 本规格实际纳入的 test controls
+    - is_full: 每个槽位都选择了一个变量（替代组则为组内某一个）
+    """
+    chosen_cols: list[int] = []
+    chosen_names: list[str] = []
+    is_full = True
+    flat_idx = 0
+
+    for slot in control_slots:
+        radix = len(slot) + 1
+        state = bits % radix
+        bits //= radix
+        if state == 0:
+            is_full = False
+        else:
+            chosen_cols.append(flat_idx + state - 1)
+            chosen_names.append(slot[state - 1])
+        flat_idx += len(slot)
+
+    return chosen_cols, chosen_names, is_full
 
 def _absorb_n(vec: np.ndarray, groups: list[np.ndarray],
               tol: float = 1e-10, max_iter: int = 2000) -> np.ndarray:
@@ -342,9 +476,10 @@ def _drop_collinear_controls(
     xr_: np.ndarray,
     cm_resid: np.ndarray,
     ct_resid: np.ndarray,
-    chosen: list[str],
+    chosen_must: list[str],
+    chosen_test: list[str],
     tol: float = 1e-10,
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
+) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
     """
     更接近 reghdfe 的吸收后共线性处理：
     - 主解释变量 `x` 必须保留；若其在吸收后近乎为零，则该规格不可估；
@@ -364,7 +499,7 @@ def _drop_collinear_controls(
             trial = np.column_stack([*x_blocks, col[:, None]])
             if np.linalg.matrix_rank(trial, tol=tol) > len(x_blocks):
                 x_blocks.append(col[:, None])
-                col_meta.append(("must", None))
+                col_meta.append(("must", chosen_must[j]))
 
     if ct_resid.size:
         for j in range(ct_resid.shape[1]):
@@ -374,7 +509,7 @@ def _drop_collinear_controls(
             trial = np.column_stack([*x_blocks, col[:, None]])
             if np.linalg.matrix_rank(trial, tol=tol) > len(x_blocks):
                 x_blocks.append(col[:, None])
-                col_meta.append(("test", chosen[j]))
+                col_meta.append(("test", chosen_test[j]))
 
     X2 = np.column_stack(x_blocks)
 
@@ -389,12 +524,13 @@ def _drop_collinear_controls(
         X2 = X2[:, keep_idx]
         col_meta = [col_meta[j] for j in keep_idx]
 
+    kept_must = [name for kind, name in col_meta if kind == "must" and name is not None]
     kept_chosen = [name for kind, name in col_meta if kind == "test" and name is not None]
     ct_plot_resid = (
-        ct_resid[:, [j for j, name in enumerate(chosen) if name in set(kept_chosen)]]
+        ct_resid[:, [j for j, name in enumerate(chosen_test) if name in set(kept_chosen)]]
         if ct_resid.size and kept_chosen else np.empty((len(xr_), 0))
     )
-    return X2, ct_plot_resid, kept_chosen
+    return X2, ct_plot_resid, kept_must, kept_chosen
 
 
 def _init_enum_worker(
@@ -405,8 +541,10 @@ def _init_enum_worker(
     fe_arrs: list[np.ndarray],
     cl_arrs: list[np.ndarray],
     base_mask: np.ndarray,
-    controls_test: list[str],
     controls_must: list[str],
+    must_slots: list[ControlSlot],
+    controls_test: list[str],
+    test_slots: list[ControlSlot],
     se_kind: str,
 ) -> None:
     """在子进程中初始化只读枚举状态。"""
@@ -421,8 +559,10 @@ def _init_enum_worker(
         "fe_arrs": fe_arrs,
         "cl_arrs": cl_arrs,
         "base_mask": base_mask,
-        "controls_test": controls_test,
         "controls_must": controls_must,
+        "must_slots": must_slots,
+        "controls_test": controls_test,
+        "test_slots": test_slots,
         "se_kind": se_kind,
     }
 
@@ -437,36 +577,37 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
     fe_arrs = cast(list[np.ndarray], _enum_worker_state["fe_arrs"])
     cl_arrs = cast(list[np.ndarray], _enum_worker_state["cl_arrs"])
     base_mask = cast(np.ndarray, _enum_worker_state["base_mask"])
-    controls_test = cast(list[str], _enum_worker_state["controls_test"])
     controls_must = cast(list[str], _enum_worker_state["controls_must"])
+    must_slots = cast(list[ControlSlot], _enum_worker_state["must_slots"])
+    controls_test = cast(list[str], _enum_worker_state["controls_test"])
+    test_slots = cast(list[ControlSlot], _enum_worker_state["test_slots"])
     se_kind = cast(str, _enum_worker_state["se_kind"])
 
     records: list[SpecRecord] = []
     skipped: list[str] = []
-    all_ctrl_set = set(controls_test)
-    must_ctrl_set = set(controls_must)
-    K = len(controls_test)
 
     for bits in range(start, end):
-        cols = [j for j in range(K) if (bits >> j) & 1]
-        chosen = [controls_test[j] for j in cols]
-        chosen_set = set(chosen)
+        rem_bits, must_cols, chosen_must = _decode_required_choice(bits, must_slots)
+        test_cols, chosen_test, is_full = _decode_optional_choice(rem_bits, test_slots)
 
         mask = base_mask.copy()
-        for j in cols:
+        for j in must_cols:
+            mask &= _valid_mask(cm_arr[:, j])
+        for j in test_cols:
             mask &= _valid_mask(ct_arr[:, j])
         mask = _drop_fe_singletons(mask, fe_arrs)
 
         N = int(mask.sum())
         if N <= 1:
-            skipped.append(f"  [skip] controls={chosen or '(none)'}: 样本量不足")
+            chosen_all = chosen_must + chosen_test
+            skipped.append(f"  [skip] controls={chosen_all or '(none)'}: 样本量不足")
             continue
 
         try:
             y_sub = y_arr[mask].astype(float)
             x_sub = x_arr[mask].astype(float)
-            cm_sub = cm_arr[mask].astype(float) if cm_arr.size else np.empty((N, 0))
-            ct_sub = ct_arr[np.ix_(mask, cols)].astype(float) if cols else np.empty((N, 0))
+            cm_sub = cm_arr[np.ix_(mask, must_cols)].astype(float) if must_cols else np.empty((N, 0))
+            ct_sub = ct_arr[np.ix_(mask, test_cols)].astype(float) if test_cols else np.empty((N, 0))
 
             groups: list[np.ndarray] = []
             n_levels_list: list[int] = []
@@ -487,12 +628,14 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
             offset += cm_sub.shape[1]
             ct_resid = np.column_stack(absorbed[offset:offset + ct_sub.shape[1]]) if ct_sub.shape[1] else np.empty((N, 0))
 
-            X2, _ct_plot_resid, kept_chosen = _drop_collinear_controls(
+            X2, _ct_plot_resid, kept_must, kept_chosen = _drop_collinear_controls(
                 xr_=xr_,
                 cm_resid=cm_resid,
                 ct_resid=ct_resid,
-                chosen=chosen,
+                chosen_must=chosen_must,
+                chosen_test=chosen_test,
             )
+            kept_must_set = set(kept_must)
             chosen_set = set(kept_chosen)
 
             beta, *_ = np.linalg.lstsq(X2, yr_, rcond=None)
@@ -530,7 +673,8 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
             p_value = _p_value_from_t(abs(t_value), df_resid)
             crit99, crit95, crit90 = _crit_values(df_resid)
         except Exception as _exc:
-            skipped.append(f"  [skip] controls={chosen or '(none)'}: {_exc}")
+            chosen_all = chosen_must + chosen_test
+            skipped.append(f"  [skip] controls={chosen_all or '(none)'}: {_exc}")
             continue
 
         records.append({
@@ -546,8 +690,8 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
             "ci90_lo": coef - crit90 * se,
             "ci90_hi": coef + crit90 * se,
             "controls_test": chosen_set,
-            "controls_all": must_ctrl_set | chosen_set,
-            "is_full": chosen_set == all_ctrl_set,
+            "controls_all": kept_must_set | chosen_set,
+            "is_full": is_full,
             "obs": N,
         })
 
@@ -562,14 +706,15 @@ def _enumerate_specs(
     fe_arrs: list[np.ndarray],
     cl_arrs: list[np.ndarray],
     base_mask: np.ndarray,
-    controls: list[str],
     controls_must: list[str],
+    must_slots: list[ControlSlot],
+    controls_test: list[str],
+    test_slots: list[ControlSlot],
     se_kind: str,
     n_jobs: int = 1,
 ) -> list[SpecRecord]:
-    """枚举所有 2^K 规格，返回排序后的 records 列表（内部共用）。"""
-    K = len(controls)
-    total_specs = 2 ** K
+    """枚举所有合法规格，返回排序后的 records 列表（内部共用）。"""
+    total_specs = _spec_count_from_slots(must_slots, test_slots)
     n_jobs = max(1, int(n_jobs))
     parallel_threshold = max(32, n_jobs * 4)
 
@@ -577,7 +722,7 @@ def _enumerate_specs(
     if n_jobs == 1 or total_specs <= 1 or total_specs < parallel_threshold:
         _init_enum_worker(
             y_arr, x_arr, cm_arr, ct_arr, fe_arrs, cl_arrs, base_mask,
-            controls, controls_must, se_kind,
+            controls_must, must_slots, controls_test, test_slots, se_kind,
         )
         records, skipped = _enumerate_specs_chunk((0, total_specs))
         for msg in skipped:
@@ -607,7 +752,7 @@ def _enumerate_specs(
             initializer=_init_enum_worker,
             initargs=(
                 y_arr, x_arr, cm_arr, ct_arr, fe_arrs, cl_arrs, base_mask,
-                controls, controls_must, se_kind,
+                controls_must, must_slots, controls_test, test_slots, se_kind,
             ),
         )
     finally:
@@ -648,11 +793,11 @@ def _run_spec_task(args: tuple) -> tuple[str, list[SpecRecord]]:
 
     (spec_name, y_arr, x_arr, cm_arr, ct_arr,
      fe_arrs, cl_arrs, base_mask,
-     controls_test, controls_must, se_kind, n_inner) = args
+     controls_must, must_slots, controls_test, test_slots, se_kind, n_inner) = args
 
     records = _enumerate_specs(
         y_arr, x_arr, cm_arr, ct_arr, fe_arrs, cl_arrs, base_mask,
-        controls_test, controls_must, se_kind,
+        controls_must, must_slots, controls_test, test_slots, se_kind,
         n_jobs=n_inner,
     )
     return spec_name, records
@@ -684,13 +829,15 @@ def _run_flat_spec_chunk(args: tuple) -> tuple[str, list[SpecRecord], list[str],
         fe_arrs,
         cl_arrs,
         base_mask,
-        controls_test,
         controls_must,
+        must_slots,
+        controls_test,
+        test_slots,
         se_kind,
     ) = args
     _init_enum_worker(
         y_arr, x_arr, cm_arr, ct_arr, fe_arrs, cl_arrs, base_mask,
-        controls_test, controls_must, se_kind,
+        controls_must, must_slots, controls_test, test_slots, se_kind,
     )
     records, skipped = _enumerate_specs_chunk(bit_range)
     return spec_name, records, skipped, bit_range
@@ -865,8 +1012,8 @@ def regression_monkey(
     df: pd.DataFrame,
     y: str,
     x: str,
-    controls_test: list[str],
-    controls_must: list[str],
+    controls_test: ControlSpecInput,
+    controls_must: ControlSpecInput,
     fe_cols: list[str],
     clust_cols: list[str],
     output_path: str | None = None,
@@ -884,8 +1031,8 @@ def regression_monkey(
     df           : 数据框（列需包含 y, x, controls_test, controls_must, fe_cols, clust_cols）
     y            : 被解释变量列名
     x            : 主解释变量列名（绘图中的 β）
-    controls_test: 参与 2^K 组合枚举的控制变量列名列表
-    controls_must: 强制纳入、但不参与组合枚举的控制变量列名列表
+    controls_test: 参与组合枚举的控制变量列表；元素可为列名，或表示“组内互斥替代”的列名列表
+    controls_must: 强制纳入的控制变量列表；元素可为列名，或表示“组内互斥替代”的列名列表
     fe_cols      : 固定效应列名列表（1 个或多个，支持 N 向 FE）
     clust_cols   : 聚类变量列名列表（1 个 = 单向聚类；2 个 = CGM 双向聚类）
     output_path  : 图片保存路径；None 则不保存
@@ -901,16 +1048,21 @@ def regression_monkey(
     fig     : matplotlib Figure 对象
     """
     total_t0 = perf_counter()
+    controls_must_flat, must_slots = _normalize_controls_must(controls_must)
+    controls_test_flat, test_slots = _normalize_controls_test(controls_test)
+    varying_must_controls = _varying_must_controls(must_slots)
+    matrix_controls = varying_must_controls + controls_test_flat
+    show_special_markers = not varying_must_controls
     N = len(df)
     y_arr = df[y].to_numpy()
     x_arr = df[x].to_numpy()
     cm_arr = (
-        np.column_stack([df[c].to_numpy() for c in controls_must])
-        if controls_must else np.empty((N, 0), dtype=float)
+        np.column_stack([df[c].to_numpy() for c in controls_must_flat])
+        if controls_must_flat else np.empty((N, 0), dtype=float)
     )
     ct_arr = (
-        np.column_stack([df[c].to_numpy() for c in controls_test])
-        if controls_test else np.empty((N, 0), dtype=float)
+        np.column_stack([df[c].to_numpy() for c in controls_test_flat])
+        if controls_test_flat else np.empty((N, 0), dtype=float)
     )
     fe_arrs = [df[c].to_numpy() for c in fe_cols]
     cl_arrs = [df[c].to_numpy() for c in clust_cols]
@@ -927,7 +1079,7 @@ def regression_monkey(
 
     print(
         f"开始逐规格回归（FE = {', '.join(fe_cols)}；"
-        f"controls_must = {len(controls_must)}；controls_test = {len(controls_test)}；"
+        f"controls_must = {len(controls_must_flat)}；controls_test = {len(controls_test_flat)}；"
         f"n_jobs = {n_jobs}）"
     )
 
@@ -941,15 +1093,17 @@ def regression_monkey(
     # ── Step 3: 枚举所有规格 ──────────────────────────────
     records = _enumerate_specs(
         y_arr, x_arr, cm_arr, ct_arr, fe_arrs, cl_arrs, base_mask,
-        controls_test, controls_must, se_kind, n_jobs=n_jobs,
+        controls_must_flat, must_slots, controls_test_flat, test_slots, se_kind, n_jobs=n_jobs,
     )
     n_full  = sum(r["is_full"] for r in records)
     print(f"完成 {len(records)} 个规格（{n_full} 个全变量规格）")
     print(f"系数范围：[{records[0]['coef']:.4f}, {records[-1]['coef']:.4f}]")
 
     # ── Step 4: 绘图 ─────────────────────────────────────
-    fig = _plot(records, y_name=y, x_name=x, controls_test=controls_test,
-                controls_must=controls_must,
+    fig = _plot(records, y_name=y, x_name=x, controls_test=controls_test_flat,
+                controls_must=controls_must_flat,
+                matrix_controls=matrix_controls,
+                show_special_markers=show_special_markers,
                 fig_width=fig_width, dpi=dpi,
                 output_path=output_path, title_suffix=title_suffix,
                 elapsed_seconds_preplot=perf_counter() - total_t0)
@@ -964,8 +1118,8 @@ def regression_monkey(
                 records    = records,
                 y          = y,
                 x          = x,
-                controls_must = controls_must,
-                controls_test = controls_test,
+                controls_must = controls_must_flat,
+                controls_test = controls_test_flat,
                 fe_cols    = fe_cols,
                 clust_cols = clust_cols,
             ),
@@ -984,8 +1138,8 @@ def regression_monkey_auto(
     df: pd.DataFrame,
     y: str,
     x: str,
-    controls_test: list[str],
-    controls_must: list[str],
+    controls_test: ControlSpecInput,
+    controls_must: ControlSpecInput,
     firm_fe: str,
     ind_fe: str,
     time_fe: str,
@@ -1005,8 +1159,8 @@ def regression_monkey_auto(
     df         : 数据框
     y          : 被解释变量
     x          : 主解释变量
-    controls_test: 参与组合枚举的控制变量列表
-    controls_must: 强制纳入、不参与组合枚举的控制变量列表
+    controls_test: 参与组合枚举的控制变量列表；元素可为列名，或表示“组内互斥替代”的列名列表
+    controls_must: 强制纳入的控制变量列表；元素可为列名，或表示“组内互斥替代”的列名列表
     firm_fe    : 个体（企业）固定效应列名
     ind_fe     : 行业固定效应列名
     time_fe    : 时间固定效应列名
@@ -1023,6 +1177,11 @@ def regression_monkey_auto(
     list of (spec_name, records, fig) tuples
     """
     n_jobs = _resolve_n_jobs(n_jobs)
+    controls_must_flat, must_slots = _normalize_controls_must(controls_must)
+    controls_test_flat, test_slots = _normalize_controls_test(controls_test)
+    varying_must_controls = _varying_must_controls(must_slots)
+    matrix_controls = varying_must_controls + controls_test_flat
+    show_special_markers = not varying_must_controls
 
     # 基础变量名映射（"逻辑键" → 实际列名）
     base_var_map: dict[str, str] = {
@@ -1078,7 +1237,7 @@ def regression_monkey_auto(
     if use_polars and pl_df is not None and derived_exprs:
         pl_df = pl_df.with_columns(derived_exprs)
 
-    base_vars = [y, x] + controls_must
+    base_vars = [y, x] + controls_must_flat
     results: list[tuple[str, list[SpecRecord], Figure]] = []
     all_sig_rows: list[dict] = []
     total_specs = 0
@@ -1106,7 +1265,7 @@ def regression_monkey_auto(
         fe_cols    = [var_map[k] for k in spec_def["fe_keys"]]
         clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
 
-        needed = list(dict.fromkeys(base_vars + controls_test + fe_cols + clust_cols))
+        needed = list(dict.fromkeys(base_vars + controls_test_flat + fe_cols + clust_cols))
         if use_polars and pl_df is not None:
             df_spec = cast(
                 pd.DataFrame,
@@ -1122,12 +1281,12 @@ def regression_monkey_auto(
         y_arr  = df_spec[y].to_numpy()
         x_arr  = df_spec[x].to_numpy()
         cm_arr = (
-            np.column_stack([df_spec[c].to_numpy() for c in controls_must])
-            if controls_must else np.empty((N, 0), dtype=float)
+            np.column_stack([df_spec[c].to_numpy() for c in controls_must_flat])
+            if controls_must_flat else np.empty((N, 0), dtype=float)
         )
         ct_arr = (
-            np.column_stack([df_spec[c].to_numpy() for c in controls_test])
-            if controls_test else np.empty((N, 0), dtype=float)
+            np.column_stack([df_spec[c].to_numpy() for c in controls_test_flat])
+            if controls_test_flat else np.empty((N, 0), dtype=float)
         )
         fe_arrs  = [df_spec[c].to_numpy() for c in fe_cols]
         cl_arrs  = [df_spec[c].to_numpy() for c in clust_cols]
@@ -1153,7 +1312,7 @@ def regression_monkey_auto(
         task_args.append((
             spec_name, y_arr, x_arr, cm_arr, ct_arr,
             fe_arrs, cl_arrs, base_mask,
-            controls_test, controls_must, se_kind,
+            controls_must_flat, must_slots, controls_test_flat, test_slots, se_kind,
             1,   # 手动/单规格路径可直接复用 _run_spec_task
         ))
         task_metas.append({
@@ -1186,16 +1345,16 @@ def regression_monkey_auto(
             (
                 spec_name, y_arr, x_arr, cm_arr, ct_arr,
                 fe_arrs, cl_arrs, base_mask,
-                controls_test_i, controls_must_i, se_kind_i, _n_inner,
+                controls_must_i, must_slots_i, controls_test_i, test_slots_i, se_kind_i, _n_inner,
             ) = spec_args
-            total_spec_count = 2 ** len(controls_test_i)
+            total_spec_count = _spec_count_from_slots(must_slots_i, test_slots_i)
             bit_ranges = _spec_bit_ranges(total_spec_count, n_jobs)
             spec_chunk_counts[spec_name] = len(bit_ranges)
             for bit_range in bit_ranges:
                 flat_chunk_tasks.append((
                     spec_name, bit_range, y_arr, x_arr, cm_arr, ct_arr,
                     fe_arrs, cl_arrs, base_mask,
-                    controls_test_i, controls_must_i, se_kind_i,
+                    controls_must_i, must_slots_i, controls_test_i, test_slots_i, se_kind_i,
                 ))
 
         total_chunks = len(flat_chunk_tasks)
@@ -1261,8 +1420,10 @@ def regression_monkey_auto(
             records,
             y_name        = y,
             x_name        = x,
-            controls_test = controls_test,
-            controls_must = controls_must,
+            controls_test = controls_test_flat,
+            controls_must = controls_must_flat,
+            matrix_controls = matrix_controls,
+            show_special_markers = show_special_markers,
             fig_width     = fig_width,
             dpi           = dpi,
             output_path   = meta["out_i"],
@@ -1276,8 +1437,8 @@ def regression_monkey_auto(
                 records       = records,
                 y             = y,
                 x             = x,
-                controls_must = controls_must,
-                controls_test = controls_test,
+                controls_must = controls_must_flat,
+                controls_test = controls_test_flat,
                 fe_cols       = meta["fe_cols"],
                 clust_cols    = meta["clust_cols"],
                 vce_label     = meta["vce_label"],
@@ -1361,12 +1522,14 @@ def _export_sig_table(
     rows:        list[dict],
     output_path: str,
     n_specs:     int,
+    print_summary: bool = True,
 ) -> "pd.DataFrame | None":
     """将显著规格行写出为单张 CSV 汇总表。"""
     rows = [{**row, "Specs": n_specs} for row in rows]
 
     if not rows:
-        print("  [汇总表] 无 90% 及以上显著的规格，跳过导出")
+        if print_summary:
+            print("  [汇总表] 无 90% 及以上显著的规格，跳过导出")
         return None
 
     tbl = pd.DataFrame(rows)
@@ -1380,10 +1543,30 @@ def _export_sig_table(
         star = int(r["Star"])
         if star in star_counts:
             star_counts[star] += 1
-    print(f"  [汇总表] {len(rows)}/{n_specs} 个规格显著"
-          f"（+3:{star_counts[3]}  +2:{star_counts[2]}  +1:{star_counts[1]}  "
-          f"-1:{star_counts[-1]}  -2:{star_counts[-2]}  -3:{star_counts[-3]}）→ {output_path}")
+    if print_summary:
+        print(f"  [汇总表] {len(rows)}/{n_specs} 个规格显著"
+              f"（+3:{star_counts[3]}  +2:{star_counts[2]}  +1:{star_counts[1]}  "
+              f"-1:{star_counts[-1]}  -2:{star_counts[-2]}  -3:{star_counts[-3]}）→ {output_path}")
     return tbl
+
+
+def _sig_star_counts(rows: list[dict[str, Any]]) -> dict[int, int]:
+    """按签名显著性星级汇总行记录。"""
+    star_counts = {k: 0 for k in (3, 2, 1, -1, -2, -3)}
+    for row in rows:
+        star = int(row["Star"])
+        if star in star_counts:
+            star_counts[star] += 1
+    return star_counts
+
+
+def _format_sig_summary(n_sig: int, n_specs: int, star_counts: dict[int, int]) -> str:
+    """格式化终端中的显著性汇总文本。"""
+    return (
+        f"[汇总表] {n_sig}/{n_specs} 个规格显著"
+        f"（+3:{star_counts[3]}  +2:{star_counts[2]}  +1:{star_counts[1]}  "
+        f"-1:{star_counts[-1]}  -2:{star_counts[-2]}  -3:{star_counts[-3]}）"
+    )
 
 
 def _toml_literal(value) -> str:
@@ -1420,6 +1603,8 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
           controls_test: list[str], controls_must: list[str],
           fig_width: float, dpi: int,
           output_path: str | None,
+          matrix_controls: list[str] | None = None,
+          show_special_markers: bool = True,
           title_suffix: str | None = None,
           elapsed_seconds_preplot: float | None = None) -> Figure:
     import matplotlib.pyplot as plt
@@ -1427,7 +1612,8 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     from matplotlib.lines import Line2D
     plot_t0 = perf_counter()
 
-    K_test = len(controls_test)
+    matrix_controls = matrix_controls if matrix_controls is not None else controls_test
+    K_test = len(matrix_controls)
     K_total = K_test + len(controls_must)
     matrix_rows = K_test
     n = len(records)
@@ -1450,9 +1636,9 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     for k in range(K_test):
         row_runs: list[dict] = []
         start = 0
-        inc = controls_test[k] in records[0]["controls_test"]
+        inc = matrix_controls[k] in records[0]["controls_all"]
         for i in range(1, n + 1):
-            cur = (controls_test[k] in records[i]["controls_test"]) if i < n else (not inc)
+            cur = (matrix_controls[k] in records[i]["controls_all"]) if i < n else (not inc)
             if cur != inc:
                 length = i - start
                 row_runs.append({"start": start, "len": length, "inc": inc})
@@ -1522,10 +1708,10 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         is_sign_switch[int(np.argmin(np.abs(coefs)))] = True
 
     # 特殊规格保留竖线标记：仅对 full / no-controls_test 绘制
-    if is_full.any():
+    if show_special_markers and is_full.any():
         ax1.vlines(xs[is_full], lo99[is_full], hi99[is_full],
                    colors=_CFUL, linewidth=1.1, zorder=5)
-    if is_nocontrol.any():
+    if show_special_markers and is_nocontrol.any():
         ax1.vlines(xs[is_nocontrol], lo99[is_nocontrol], hi99[is_nocontrol],
                    colors=_CNOC, linewidth=1.1, zorder=5.5)
     if is_sign_switch.any():
@@ -1546,7 +1732,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
 
     # 无控制变量规格：保留显著性填色，仅用白色描边高亮
     for mask, color in draw_order:
-        m = mask & is_nocontrol
+        m = mask & is_nocontrol & show_special_markers
         if m.any():
             ax1.scatter(
                 xs[m],
@@ -1560,7 +1746,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
 
     # 全变量规格：最后绘制，确保覆盖在普通点与其他特殊点之上
     for mask, color in draw_order:
-        m = mask & is_full
+        m = mask & is_full & show_special_markers
         if m.any():
             ax1.scatter(xs[m], coefs[m], s=_SPECIAL_S, color=color,
                         edgecolors=_CFUL, linewidths=_SPECIAL_LW, zorder=10)
@@ -1608,15 +1794,22 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         Line2D([0], [0], marker="o", color="w", markerfacecolor=_CINS,
                markersize=7, label="n.s."),
         Line2D([0], [0], marker="o", color="w", markerfacecolor="#777777",
-               markeredgecolor=_CFUL, markeredgewidth=_SPECIAL_LW,
-               markersize=9, label="Full controls"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#777777",
-               markeredgecolor=_CNOC, markeredgewidth=_SPECIAL_LW,
-               markersize=9, label="No controls_test"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#777777",
                markeredgecolor=_CSWITCH, markeredgewidth=_SPECIAL_LW,
                markersize=9, label="Closest to zero"),
     ]
+    if show_special_markers:
+        legend_elems.insert(
+            7,
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="#777777",
+                   markeredgecolor=_CFUL, markeredgewidth=_SPECIAL_LW,
+                   markersize=9, label="Full controls"),
+        )
+        legend_elems.insert(
+            8,
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="#777777",
+                   markeredgecolor=_CNOC, markeredgewidth=_SPECIAL_LW,
+                   markersize=9, label="No controls_test"),
+        )
     ax1.legend(handles=legend_elems, fontsize=7.5, frameon=True,
                loc="lower center", bbox_to_anchor=(0.5, -0.08), ncol=len(legend_elems),
                columnspacing=0.9, handletextpad=0.4, borderaxespad=0.0,
@@ -1647,7 +1840,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     ax2.set_xlim(-0.5, n - 0.5)
     ax2.set_ylim(-0.5, matrix_rows - 0.5)
     ax2.set_yticks(range(matrix_rows))
-    ax2.set_yticklabels(controls_test[::-1], fontsize=8)
+    ax2.set_yticklabels(matrix_controls[::-1], fontsize=8)
     ax2.tick_params(axis="y", length=0, pad=4)
     ax2.tick_params(axis="x", bottom=False, labelbottom=False)
     ax2.spines[["top", "right", "left", "bottom"]].set_visible(True)
@@ -1689,10 +1882,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             )
 
     # 全变量列红色虚线
-    for fi in np.where(is_full)[0]:
-        ax2.axvline(fi, color="#cc2222", lw=1.1, ls="-", zorder=3)
-    for ni in np.where(is_nocontrol)[0]:
-        ax2.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=3)
+    if show_special_markers:
+        for fi in np.where(is_full)[0]:
+            ax2.axvline(fi, color="#cc2222", lw=1.1, ls="-", zorder=3)
+        for ni in np.where(is_nocontrol)[0]:
+            ax2.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=3)
     for si in np.where(is_sign_switch)[0]:
         ax2.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=3)
 
@@ -1753,10 +1947,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             align="center",
         )
     ax3.axhline(obs_mean, color="#444444", lw=0.8, ls="--", zorder=3)
-    for fi in np.where(is_full)[0]:
-        ax3.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
-    for ni in np.where(is_nocontrol)[0]:
-        ax3.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=4)
+    if show_special_markers:
+        for fi in np.where(is_full)[0]:
+            ax3.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
+        for ni in np.where(is_nocontrol)[0]:
+            ax3.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=4)
     for si in np.where(is_sign_switch)[0]:
         ax3.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
     ax3.set_xlim(-0.5, n - 0.5)
@@ -1854,7 +2049,7 @@ def main() -> None:
     parser.add_argument("--controls", metavar="VAR", nargs="+",
                         help="兼容旧配置；等价于 --controls-test")
     parser.add_argument("--controls-test", dest="controls_test", metavar="VAR", nargs="+",
-                        help="参与 2^K 组合枚举的控制变量列名（空格分隔，最多建议 ≤15 个）")
+                        help="参与组合枚举的控制变量列名（CLI 传平铺列名；TOML/API 可用嵌套列表表示组内互斥替代）")
     parser.add_argument("--controls-must", dest="controls_must", metavar="VAR", nargs="+",
                         help="强制纳入回归、但不参与组合枚举的控制变量列名")
 
@@ -2011,6 +2206,11 @@ def main() -> None:
         list(args.controls) if args.controls else []
     )
     controls_must = list(args.controls_must) if args.controls_must else []
+    try:
+        controls_must_flat, _must_slots = _normalize_controls_must(controls_must)
+        controls_test_flat, _control_slots = _normalize_controls_test(controls_test)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # ── 必填参数校验 ──────────────────────────────────────
     missing_required = [f for f, v in [
@@ -2075,7 +2275,9 @@ def main() -> None:
         "y": list(args.y),
         "x": list(args.x),
         "controls_test": controls_test,
+        "controls_test_flat": controls_test_flat,
         "controls_must": controls_must,
+        "controls_must_flat": controls_must_flat,
         "output": str(output_root),
         "run_output_dir": str(run_output_dir),
         "dpi": args.dpi,
@@ -2097,6 +2299,7 @@ def main() -> None:
     n_combos = len(combos)
     all_sig_rows: list[dict] = []
     total_sig_specs = 0
+    combo_summaries: list[dict[str, Any]] = []
     clust_cols: list[str] = []
 
     if not is_auto:
@@ -2118,6 +2321,8 @@ def main() -> None:
         print(f"\n{'#'*60}")
         print(f"[{idx}/{n_combos}]  Y = {y_var}  ×  X = {x_var}")
         print("#" * 60)
+        pair_sig_rows: list[dict[str, Any]] = []
+        pair_total_specs = 0
 
         # 默认输出文件名不再附带 regression_monkey 前缀
         pair_stem = f"{y_var}_{x_var}"
@@ -2176,21 +2381,22 @@ def main() -> None:
                         fe_cols.append(var_map[key])
                 for key in spec_def["cl_keys"]:
                     clust_cols.append(var_map[key])
-                all_sig_rows.extend(
-                    _build_sig_rows(
-                        records=records,
-                        y=y_var,
-                        x=x_var,
-                        controls_must=controls_must,
-                        controls_test=controls_test,
-                        fe_cols=fe_cols,
-                        clust_cols=clust_cols,
-                    )
+                pair_rows = _build_sig_rows(
+                    records=records,
+                    y=y_var,
+                    x=x_var,
+                    controls_must=controls_must_flat,
+                    controls_test=controls_test_flat,
+                    fe_cols=fe_cols,
+                    clust_cols=clust_cols,
                 )
+                all_sig_rows.extend(pair_rows)
+                pair_sig_rows.extend(pair_rows)
                 total_sig_specs += len(records)
+                pair_total_specs += len(records)
         else:
             # 手动模式：列存在性检查
-            needed = [y_var, x_var] + controls_must + controls_test + list(args.fe) + clust_cols
+            needed = [y_var, x_var] + controls_must_flat + controls_test_flat + list(args.fe) + clust_cols
             missing = [c for c in needed if c not in df.columns]
             if missing:
                 print(f"  [跳过] 以下列不存在：{missing}")
@@ -2210,25 +2416,41 @@ def main() -> None:
                 n_jobs       = resolved_n_jobs,
                 export_sig_table = False,
             )
-            all_sig_rows.extend(
-                _build_sig_rows(
-                    records=records,
-                    y=y_var,
-                    x=x_var,
-                    controls_must=controls_must,
-                    controls_test=controls_test,
-                    fe_cols=list(args.fe),
-                    clust_cols=clust_cols,
-                )
+            pair_rows = _build_sig_rows(
+                records=records,
+                y=y_var,
+                x=x_var,
+                controls_must=controls_must_flat,
+                controls_test=controls_test_flat,
+                fe_cols=list(args.fe),
+                clust_cols=clust_cols,
             )
+            all_sig_rows.extend(pair_rows)
+            pair_sig_rows.extend(pair_rows)
             total_sig_specs += len(records)
+            pair_total_specs += len(records)
+
+        combo_summaries.append({
+            "y": y_var,
+            "x": x_var,
+            "n_specs": pair_total_specs,
+            "n_sig": len(pair_sig_rows),
+            "star_counts": _sig_star_counts(pair_sig_rows),
+        })
 
     _export_sig_table(
         rows=all_sig_rows,
         output_path=str(run_output_dir / "sig.csv"),
         n_specs=total_sig_specs,
+        print_summary=False,
     )
 
+    print("\n各 Y-X 组合显著性汇总：")
+    for summary in combo_summaries:
+        print(
+            f"  Y={summary['y']}  X={summary['x']}  "
+            f"{_format_sig_summary(summary['n_sig'], summary['n_specs'], summary['star_counts'])}"
+        )
     print(f"\n全部完成：{n_combos} 个 y×x 组合")
 
 
