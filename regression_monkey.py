@@ -1655,16 +1655,17 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
 
     # ── 布局 ────────────────────────────────────────────
     title_h = 1.55
+    pval_h = 0.95
     upper_h = 3.8
     lower_h = max(1.2, matrix_rows * 0.30 + 0.55)
     stats_h = 0.45
     obs_h = 1.0
 
-    fig, (ax_title, ax1, ax2, ax_stats, ax3) = plt.subplots(
-        5, 1,
-        figsize=(fig_width, title_h + upper_h + lower_h + stats_h + obs_h),
+    fig, (ax_title, ax_p, ax1, ax2, ax_stats, ax3) = plt.subplots(
+        6, 1,
+        figsize=(fig_width, title_h + pval_h + upper_h + lower_h + stats_h + obs_h),
         facecolor="white",
-        gridspec_kw={"height_ratios": [title_h, upper_h, lower_h, stats_h, obs_h]},
+        gridspec_kw={"height_ratios": [title_h, pval_h, upper_h, lower_h, stats_h, obs_h]},
         layout="constrained",
         dpi=dpi,
     )
@@ -1698,6 +1699,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     _C95  = "#7CCD7C"   # 草绿
     _C90  = "#1F77B4"   # 蓝
     _CINS = "#000000"   # 黑（不显著）
+    _CPBAR_INS = "#7a7a7a"  # 灰（p-value 条形图中的不显著）
     _CFUL = "#cc2222"   # 红（全变量规格外圈）
     _CNOC = "#ff8c00"   # 橙（无 test 控制变量规格外圈）
     _CSWITCH = "#2255cc"  # 蓝（最接近 0 的系数点）
@@ -1706,6 +1708,60 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     is_sign_switch = np.zeros(n, dtype=bool)
     if np.any(coefs < 0) and np.any(coefs > 0):
         is_sign_switch[int(np.argmin(np.abs(coefs)))] = True
+
+    # ── p 值条形图 ─────────────────────────────────────
+    pbar_sig99 = p_values <= 0.01
+    pbar_sig95 = (p_values > 0.01) & (p_values <= 0.05)
+    pbar_sig90 = (p_values > 0.05) & (p_values <= 0.10)
+    pbar_insig = p_values > 0.10
+
+    bar_colors = np.full(n, _CPBAR_INS, dtype=object)
+    bar_colors[pbar_sig90] = _C90
+    bar_colors[pbar_sig95] = _C95
+    bar_colors[pbar_sig99] = _C99
+
+    p_values_signed = np.where(coefs < 0, -p_values, p_values)
+    p_values_plot = np.clip(p_values_signed, -0.15, 0.15)
+
+    ax_p.set_facecolor("white")
+    p_edges = np.arange(n + 1) - 0.5
+    for mask, color in (
+        (pbar_insig, _CPBAR_INS),
+        (pbar_sig90, _C90),
+        (pbar_sig95, _C95),
+        (pbar_sig99, _C99),
+    ):
+        if mask.any():
+            ax_p.stairs(
+                np.where(mask, p_values_plot, 0.0),
+                edges=p_edges,
+                baseline=0.0,
+                fill=True,
+                color=color,
+                linewidth=0.0,
+                zorder=2,
+            )
+    ax_p.axhline(0, color="#cc2222", lw=0.9, ls="--", zorder=3)
+    if show_special_markers and is_full.any():
+        for fi in np.where(is_full)[0]:
+            ax_p.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
+    if show_special_markers and is_nocontrol.any():
+        for ni in np.where(is_nocontrol)[0]:
+            ax_p.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=4)
+    for si in np.where(is_sign_switch)[0]:
+        ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
+    ax_p.set_xlim(-0.5, n - 0.5)
+    ax_p.set_ylim(-0.15, 0.15)
+    ax_p.set_ylabel("P", fontsize=8)
+    ax_p.set_yticks([-0.10, -0.05, -0.01, 0.01, 0.05, 0.10])
+    ax_p.set_yticklabels(["*", "**", "***", "***", "**", "*"])
+    ax_p.tick_params(axis="y", labelsize=8)
+    ax_p.tick_params(axis="x", bottom=False, labelbottom=False)
+    ax_p.grid(axis="y", color="#eeeeee", lw=0.5, zorder=0)
+    ax_p.spines[["top", "right", "left", "bottom"]].set_visible(True)
+    for spine in ax_p.spines.values():
+        spine.set_color("#000000")
+        spine.set_linewidth(0.8)
 
     # 特殊规格保留竖线标记：仅对 full / no-controls_test 绘制
     if show_special_markers and is_full.any():
@@ -1929,8 +1985,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             bottom=obs_mean,
             width=1.0,
             color="#cc2222",
+            edgecolor="#cc2222",
             alpha=0.35,
-            linewidth=0,
+            linewidth=0.25,
+            antialiased=True,
+            snap=False,
             zorder=2,
             align="center",
         )
@@ -1941,8 +2000,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             bottom=obs_mean,
             width=1.0,
             color="#2255cc",
+            edgecolor="#2255cc",
             alpha=0.35,
-            linewidth=0,
+            linewidth=0.25,
+            antialiased=True,
+            snap=False,
             zorder=2,
             align="center",
         )
