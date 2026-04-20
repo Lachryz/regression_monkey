@@ -1721,25 +1721,50 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     bar_colors[pbar_sig99] = _C99
 
     p_values_signed = np.where(coefs < 0, -p_values, p_values)
-    p_values_plot = np.clip(p_values_signed, -0.15, 0.15)
 
     ax_p.set_facecolor("white")
-    p_edges = np.arange(n + 1) - 0.5
-    for mask, color in (
-        (pbar_insig, _CPBAR_INS),
-        (pbar_sig90, _C90),
-        (pbar_sig95, _C95),
-        (pbar_sig99, _C99),
-    ):
-        if mask.any():
-            ax_p.stairs(
-                np.where(mask, p_values_plot, 0.0),
-                edges=p_edges,
-                baseline=0.0,
-                fill=True,
-                color=color,
-                linewidth=0.0,
-                zorder=2,
+    p_block_count = np.where(
+        p_values <= 0.01,
+        3,
+        np.where(
+            p_values <= 0.05,
+            2,
+            np.where(p_values <= 0.10, 1, 4),
+        ),
+    )
+    p_block_color = np.full(n, _CPBAR_INS, dtype=object)
+    p_block_color[p_values <= 0.10] = _C90
+    p_block_color[p_values <= 0.05] = _C95
+    p_block_color[p_values <= 0.01] = _C99
+
+    p_gap = 0.16
+    p_half_w = 0.5 - p_gap
+    p_half_h = 0.5 - p_gap
+    for i in range(n):
+        blocks = int(p_block_count[i])
+        color_code = _CPBAR_INS
+        if p_values[i] <= 0.10:
+            color_code = _C90
+        if p_values[i] <= 0.05:
+            color_code = _C95
+        if p_values[i] <= 0.01:
+            color_code = _C99
+        if coefs[i] < 0:
+            rows = range(3, 3 - blocks, -1)   # 从中轴向下填充
+        else:
+            rows = range(4, 4 + blocks)        # 从中轴向上填充
+        for row in rows:
+            y_center = -3.5 + row
+            ax_p.add_patch(
+                mpatches.Rectangle(
+                    (i - p_half_w, y_center - p_half_h),
+                    2 * p_half_w,
+                    2 * p_half_h,
+                    facecolor=color_code,
+                    edgecolor="none",
+                    linewidth=0.0,
+                    zorder=2,
+                )
             )
     ax_p.axhline(0, color="#cc2222", lw=0.9, ls="--", zorder=3)
     if show_special_markers and is_full.any():
@@ -1751,13 +1776,12 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     for si in np.where(is_sign_switch)[0]:
         ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
     ax_p.set_xlim(-0.5, n - 0.5)
-    ax_p.set_ylim(-0.15, 0.15)
+    ax_p.set_ylim(-4.0, 4.0)
     ax_p.set_ylabel("P", fontsize=8)
-    ax_p.set_yticks([-0.10, -0.05, -0.01, 0.01, 0.05, 0.10])
-    ax_p.set_yticklabels(["*", "**", "***", "***", "**", "*"])
+    ax_p.set_yticks([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
+    ax_p.set_yticklabels(["---", "--", "-", "o", "+", "++", "+++"], fontfamily="monospace")
     ax_p.tick_params(axis="y", labelsize=8)
     ax_p.tick_params(axis="x", bottom=False, labelbottom=False)
-    ax_p.grid(axis="y", color="#eeeeee", lw=0.5, zorder=0)
     ax_p.spines[["top", "right", "left", "bottom"]].set_visible(True)
     for spine in ax_p.spines.values():
         spine.set_color("#000000")
