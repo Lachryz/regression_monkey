@@ -1988,7 +1988,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         f"specs = {n}  |  controls = {K_total}",
         spec_line or "",
         f"controls_must = {', '.join(controls_must)}" if controls_must else "controls_must = (none)",
-        f"Elapsed = {elapsed_total:.2f}s  |  @Dfhaklhd",
+        f"Elapsed = {elapsed_total:.2f}s  |  @Lachryz",
     ]
     _title = "\n".join(title_lines)
     ax_title.set_axis_off()
@@ -2143,7 +2143,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     if output_path:
         fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
         elapsed_total = (elapsed_seconds_preplot or 0.0) + (perf_counter() - plot_t0)
-        title_lines[-1] = f"Elapsed = {elapsed_total:.2f}s  |  @Dfhaklhd"
+        title_lines[-1] = f"Elapsed = {elapsed_total:.2f}s  |  @Lachryz"
         title_text.set_text("\n".join(title_lines))
         fig.savefig(output_path, dpi=dpi, bbox_inches="tight", facecolor="white")
         print(f"[Saved] {output_path}")

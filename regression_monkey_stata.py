@@ -28,43 +28,12 @@ from typing import Any, cast
 
 import pandas as pd
 
+import regression_monkey_common as rm_common
 import regression_monkey_py as rm
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
 
 
 def _stata_quote(text: str) -> str:
     return '"' + text.replace('"', '""') + '"'
-
-
-def _load_toml_config(cli_args: list[str]) -> tuple[dict[str, Any], list[str]]:
-    if cli_args and not cli_args[0].startswith("-"):
-        config_path = pathlib.Path(cli_args[0]).expanduser().resolve()
-        if not config_path.exists():
-            raise FileNotFoundError(f"配置文件不存在：{config_path}")
-        with config_path.open("rb") as f:
-            return cast(dict[str, Any], tomllib.load(f)), cli_args[1:]
-
-    default_cfg = pathlib.Path(__file__).with_name("regression_monkey_config.toml")
-    if default_cfg.exists():
-        with default_cfg.open("rb") as f:
-            print(f"[配置] 加载默认配置：{default_cfg}")
-            return cast(dict[str, Any], tomllib.load(f)), cli_args
-    return {}, cli_args
-
-
-def _load_dataframe(data_path: pathlib.Path) -> pd.DataFrame:
-    suffix = data_path.suffix.lower()
-    if suffix == ".dta":
-        return cast(pd.DataFrame, pd.read_stata(data_path))
-    if suffix == ".csv":
-        return cast(pd.DataFrame, pd.read_csv(data_path))
-    if suffix in (".parquet", ".pq"):
-        return cast(pd.DataFrame, pd.read_parquet(data_path))
-    raise ValueError(f"不支持的文件格式：{suffix}（支持 .dta / .csv / .parquet）")
 
 
 def _ensure_stata_dta(
@@ -274,14 +243,6 @@ def _ensure_stata_result_exists(
     )
 
 
-def _safe_unlink(path: pathlib.Path) -> None:
-    """Best-effort delete for temporary files."""
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-
-
 def _records_from_stata_dta(
     dta_path: pathlib.Path,
     controls_must_slots: list[rm.ControlSlot],
@@ -440,18 +401,18 @@ def run_stata_engine(
             })
 
             if not args.keep_temp:
-                _safe_unlink(do_path)
-                _safe_unlink(log_path)
-                _safe_unlink(dta_result_path)
+                rm_common.safe_unlink(do_path)
+                rm_common.safe_unlink(log_path)
+                rm_common.safe_unlink(dta_result_path)
         outputs[(y_var, x_var)] = pair_items
 
     if not args.keep_temp and dta_path != data_path:
-        _safe_unlink(dta_path)
+        rm_common.safe_unlink(dta_path)
     return outputs
 
 
 def main() -> None:
-    cfg, cli_args = _load_toml_config(sys.argv[1:])
+    cfg, cli_args = rm_common.load_toml_config(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="regression_monkey_stata",
         description="Run Stata/reghdfe analysis and write standard Regression Monkey result files.",
@@ -497,7 +458,7 @@ def main() -> None:
 
     data_path = pathlib.Path(args.data).expanduser().resolve()
     print(f"读取数据：{data_path}")
-    df = _load_dataframe(data_path)
+    df = rm_common.load_dataframe(data_path)
     print(f"数据读取完成：{len(df):,} 行 × {len(df.columns)} 列")
     output_root = pathlib.Path(args.output).expanduser().resolve()
     if output_root.suffix:

@@ -6,7 +6,7 @@
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
 
-![Figure 1](sample/1.png)
+![Figure 1](assets/1.png)
 
 ## 项目文件
 

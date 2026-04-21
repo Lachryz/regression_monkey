@@ -1,0 +1,307 @@
+"""
+test_regression_monkey.py
+==========================
+pytest 测试套件。不依赖 Stata 环境，不依赖真实数据文件。
+全部使用合成 CSV 数据（固定随机种子，可重现）。
+"""
+
+from __future__ import annotations
+
+import pathlib
+import numpy as np
+import pandas as pd
+import pytest
+
+import regression_monkey_common as rm_common
+import regression_monkey_py as rm_py
+
+
+# ─────────────────────────────────────────────────────────────
+# Fixtures
+# ─────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def synthetic_df() -> pd.DataFrame:
+    """200 行合成面板数据。treatment 对 outcome 有真实正向效应（系数约 2.0）。"""
+    rng = np.random.default_rng(42)
+    n = 200
+    firm_id = rng.integers(0, 10, size=n)
+    industry = firm_id % 5
+    year = rng.integers(2018, 2022, size=n)
+    treatment = rng.standard_normal(n)
+    ctrl_a = rng.standard_normal(n)
+    ctrl_b = rng.standard_normal(n)
+    ctrl_c = rng.standard_normal(n)
+    firm_fe = rng.standard_normal(10)[firm_id]
+    outcome = 2.0 * treatment + 0.5 * ctrl_c + firm_fe + rng.standard_normal(n) * 0.5
+    return pd.DataFrame({
+        "outcome": outcome,
+        "treatment": treatment,
+        "ctrl_a": ctrl_a,
+        "ctrl_b": ctrl_b,
+        "ctrl_c": ctrl_c,
+        "firm_id": firm_id,
+        "industry": industry,
+        "year": year,
+    })
+
+
+@pytest.fixture(scope="session")
+def test_toml_path() -> pathlib.Path:
+    """regression_monkey_test.toml 的绝对路径。"""
+    p = pathlib.Path(__file__).with_name("regression_monkey_test.toml")
+    assert p.exists(), f"测试 TOML 不存在：{p}"
+    return p
+
+
+@pytest.fixture
+def tmp_csv(tmp_path: pathlib.Path, synthetic_df: pd.DataFrame) -> pathlib.Path:
+    """把合成数据写到临时 CSV 并返回路径。"""
+    p = tmp_path / "test_data.csv"
+    synthetic_df.to_csv(p, index=False)
+    return p
+
+
+# ─────────────────────────────────────────────────────────────
+# TestLoadTomlConfig
+# ─────────────────────────────────────────────────────────────
+
+class TestLoadTomlConfig:
+
+    def test_loads_explicit_toml(self, test_toml_path: pathlib.Path) -> None:
+        """显式 .toml 路径被加载，且从 remaining 中移除。"""
+        cfg, remaining = rm_common.load_toml_config([str(test_toml_path), "--dpi", "600"])
+        assert "y" in cfg
+        assert remaining == ["--dpi", "600"]
+
+    def test_explicit_toml_consumed_alone(self, test_toml_path: pathlib.Path) -> None:
+        """单独传入 .toml 路径时，remaining 为空列表。"""
+        cfg, remaining = rm_common.load_toml_config([str(test_toml_path)])
+        assert isinstance(cfg, dict)
+        assert remaining == []
+
+    def test_raises_for_missing_toml(self, tmp_path: pathlib.Path) -> None:
+        """不存在的 .toml 路径抛 FileNotFoundError。"""
+        with pytest.raises(FileNotFoundError):
+            rm_common.load_toml_config([str(tmp_path / "nonexistent.toml")])
+
+    def test_value_types(self, test_toml_path: pathlib.Path) -> None:
+        """TOML 值类型正确：y/x 为 list，dpi 为 int，fig_width 为 float。"""
+        cfg, _ = rm_common.load_toml_config([str(test_toml_path)])
+        assert isinstance(cfg["y"], list)
+        assert isinstance(cfg["x"], list)
+        assert isinstance(cfg["dpi"], int)
+        assert isinstance(cfg["fig_width"], float)
+
+    def test_non_toml_arg_not_consumed(self, test_toml_path: pathlib.Path) -> None:
+        """非 .toml 首参数不会被消费（仍留在 remaining 中）。"""
+        # 首个参数是 flag，不匹配 .toml 条件，remaining 不变
+        cfg, remaining = rm_common.load_toml_config(["--dpi", "300"])
+        assert "--dpi" in remaining
+        assert "300" in remaining
+
+
+# ─────────────────────────────────────────────────────────────
+# TestLoadDataframe
+# ─────────────────────────────────────────────────────────────
+
+class TestLoadDataframe:
+
+    def test_loads_csv(self, tmp_csv: pathlib.Path) -> None:
+        """CSV 加载后返回正确行数的 DataFrame。"""
+        df = rm_common.load_dataframe(tmp_csv)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 200
+
+    def test_csv_columns_preserved(self, tmp_csv: pathlib.Path) -> None:
+        """加载的 CSV 包含原始列名。"""
+        df = rm_common.load_dataframe(tmp_csv)
+        assert set(["outcome", "treatment", "firm_id"]).issubset(df.columns)
+
+    def test_unsupported_extension_raises(self, tmp_path: pathlib.Path) -> None:
+        """.xlsx 后缀抛 ValueError，错误信息含'不支持的文件格式'。"""
+        p = tmp_path / "data.xlsx"
+        p.write_text("dummy")
+        with pytest.raises(ValueError, match="不支持的文件格式"):
+            rm_common.load_dataframe(p)
+
+
+# ─────────────────────────────────────────────────────────────
+# TestSafeUnlink
+# ─────────────────────────────────────────────────────────────
+
+class TestSafeUnlink:
+
+    def test_deletes_existing_file(self, tmp_path: pathlib.Path) -> None:
+        """存在的文件被删除。"""
+        p = tmp_path / "dummy.txt"
+        p.write_text("x")
+        rm_common.safe_unlink(p)
+        assert not p.exists()
+
+    def test_no_error_on_missing_file(self, tmp_path: pathlib.Path) -> None:
+        """文件不存在时不抛异常。"""
+        p = tmp_path / "nonexistent.txt"
+        rm_common.safe_unlink(p)  # 不应抛出
+
+
+# ─────────────────────────────────────────────────────────────
+# TestNormalizeControls
+# ─────────────────────────────────────────────────────────────
+
+class TestNormalizeControls:
+
+    def test_flat_controls_test(self) -> None:
+        """平铺字符串列表正常规范化，每个槽位长度为 1。"""
+        flat, slots = rm_py._normalize_controls_test(["a", "b", "c"])
+        assert flat == ["a", "b", "c"]
+        assert all(len(s) == 1 for s in slots)
+
+    def test_alternative_group_controls_test(self) -> None:
+        """嵌套列表视为替代组，槽位长度 >= 2。"""
+        flat, slots = rm_py._normalize_controls_test(["a", ["b1", "b2"]])
+        assert flat == ["a", "b1", "b2"]
+        assert slots[1] == ("b1", "b2")
+
+    def test_flat_controls_must(self) -> None:
+        """must 平铺规范化正确。"""
+        flat, slots = rm_py._normalize_controls_must(["c1", "c2"])
+        assert flat == ["c1", "c2"]
+        assert len(slots) == 2
+
+    def test_alternative_group_controls_must(self) -> None:
+        """must 替代组（必选其一）解析正确。"""
+        flat, slots = rm_py._normalize_controls_must([["m1", "m2"], "c"])
+        assert set(flat) == {"m1", "m2", "c"}
+        assert slots[0] == ("m1", "m2")
+        assert slots[1] == ("c",)
+
+    def test_duplicate_variable_raises(self) -> None:
+        """重复变量名抛 ValueError。"""
+        with pytest.raises(ValueError, match="重复"):
+            rm_py._normalize_controls_test(["a", "a"])
+
+    def test_empty_group_raises(self) -> None:
+        """空替代组抛 ValueError。"""
+        with pytest.raises(ValueError, match="不能为空"):
+            rm_py._normalize_controls_test([[]])
+
+
+# ─────────────────────────────────────────────────────────────
+# TestSpecCount
+# ─────────────────────────────────────────────────────────────
+
+class TestSpecCount:
+
+    def test_two_test_vars_gives_four_specs(self) -> None:
+        """2 个独立 test 变量 → 2^2 = 4 个规格。"""
+        _, test_slots = rm_py._normalize_controls_test(["a", "b"])
+        _, must_slots = rm_py._normalize_controls_must(["c"])
+        assert rm_py._spec_count_from_slots(must_slots, test_slots) == 4
+
+    def test_no_test_vars_gives_one_spec(self) -> None:
+        """无 test 变量 → 1 个规格。"""
+        _, test_slots = rm_py._normalize_controls_test([])
+        _, must_slots = rm_py._normalize_controls_must(["c"])
+        assert rm_py._spec_count_from_slots(must_slots, test_slots) == 1
+
+    def test_must_group_multiplies_specs(self) -> None:
+        """must 替代组（2选1）× test（1个变量 0/1） = 2×2 = 4。"""
+        _, test_slots = rm_py._normalize_controls_test(["a"])
+        _, must_slots = rm_py._normalize_controls_must([["m1", "m2"]])
+        assert rm_py._spec_count_from_slots(must_slots, test_slots) == 4
+
+    def test_alternative_test_group_count(self) -> None:
+        """test = ["a", ["b1","b2"]] → (1+1)*(2+1) = 6 个规格。"""
+        _, test_slots = rm_py._normalize_controls_test(["a", ["b1", "b2"]])
+        _, must_slots = rm_py._normalize_controls_must([])
+        assert rm_py._spec_count_from_slots(must_slots, test_slots) == 6
+
+
+# ─────────────────────────────────────────────────────────────
+# TestEndToEndPython
+# ─────────────────────────────────────────────────────────────
+
+class TestEndToEndPython:
+
+    def _run(self, synthetic_df: pd.DataFrame, controls_test: list, controls_must: list) -> list:
+        records, fig = rm_py.regression_monkey(
+            df=synthetic_df,
+            y="outcome",
+            x="treatment",
+            controls_test=controls_test,
+            controls_must=controls_must,
+            fe_cols=["firm_id", "year"],
+            clust_cols=["firm_id"],
+            output_path=None,
+            n_jobs=1,
+            render_plot=False,
+            export_sig_table=False,
+        )
+        assert fig is None  # render_plot=False 不生成 figure
+        return records
+
+    def test_returns_correct_spec_count(self, synthetic_df: pd.DataFrame) -> None:
+        """controls_test 2 个变量 → 4 条记录（2^2 规格）。"""
+        records = self._run(synthetic_df, ["ctrl_a", "ctrl_b"], ["ctrl_c"])
+        assert len(records) == 4
+
+    def test_records_sorted_by_coef(self, synthetic_df: pd.DataFrame) -> None:
+        """记录按系数从小到大排序。"""
+        records = self._run(synthetic_df, ["ctrl_a"], ["ctrl_c"])
+        coefs = [r["coef"] for r in records]
+        assert coefs == sorted(coefs)
+
+    def test_coef_positive(self, synthetic_df: pd.DataFrame) -> None:
+        """治疗效应系数为正（数据生成时设置 β=2.0）。"""
+        records = self._run(synthetic_df, [], ["ctrl_c"])
+        assert all(r["coef"] > 0 for r in records)
+
+    def test_se_positive(self, synthetic_df: pd.DataFrame) -> None:
+        """所有标准误均为正数。"""
+        records = self._run(synthetic_df, ["ctrl_a", "ctrl_b"], ["ctrl_c"])
+        assert all(r["se"] > 0 for r in records)
+
+    def test_write_and_read_artifacts(
+        self, synthetic_df: pd.DataFrame, tmp_path: pathlib.Path
+    ) -> None:
+        """write_analysis_artifacts 写出 CSV，records_from_dataframe 还原结果无精度损失。"""
+        records = self._run(synthetic_df, ["ctrl_a"], ["ctrl_c"])
+
+        results_csv = tmp_path / "results.csv"
+        meta_json = tmp_path / "meta.json"
+        rm_py.write_analysis_artifacts(
+            records=records,
+            results_path=results_csv,
+            meta_path=meta_json,
+            meta={
+                "engine": "python",
+                "spec_name": "manual",
+                "y": "outcome",
+                "x": "treatment",
+                "controls_test_flat": ["ctrl_a"],
+                "controls_must_flat": ["ctrl_c"],
+                "matrix_controls": ["ctrl_a"],
+                "show_special_markers": True,
+                "fig_width": 8.0,
+                "dpi": 72,
+                "output_path": str(tmp_path / "out.png"),
+            },
+        )
+
+        assert results_csv.exists()
+        assert meta_json.exists()
+
+        loaded = rm_py.records_from_dataframe(pd.read_csv(results_csv))
+        assert len(loaded) == len(records)
+        for orig, back in zip(records, loaded):
+            assert abs(orig["coef"] - back["coef"]) < 1e-9
+            assert abs(orig["se"] - back["se"]) < 1e-9
+
+    def test_toml_config_has_required_fields(self, test_toml_path: pathlib.Path) -> None:
+        """regression_monkey_test.toml 包含所有必需配置字段。"""
+        cfg, _ = rm_common.load_toml_config([str(test_toml_path)])
+        cfg_lower = {k.lower(): v for k, v in cfg.items()}
+        required = ["y", "x", "controls_test", "controls_must", "firm_fe", "ind_fe", "time_fe"]
+        for field in required:
+            assert field in cfg_lower, f"TOML 缺少字段：{field}"

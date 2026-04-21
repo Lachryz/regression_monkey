@@ -30,41 +30,9 @@ from typing import Any, cast
 
 import pandas as pd
 
+import regression_monkey_common as rm_common
 import regression_monkey_plot as rm_plot
 import regression_monkey_py as rm_py
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-
-
-def _load_toml_config(cli_args: list[str]) -> tuple[dict[str, Any], list[str]]:
-    if cli_args and pathlib.Path(cli_args[0]).suffix == ".toml":
-        config_path = pathlib.Path(cli_args.pop(0)).expanduser()
-        if not config_path.exists():
-            raise FileNotFoundError(f"配置文件不存在：{config_path}")
-        with config_path.open("rb") as f:
-            print(f"[配置] 加载：{config_path}")
-            return cast(dict[str, Any], tomllib.load(f)), cli_args
-
-    default_cfg = pathlib.Path(__file__).with_name("regression_monkey_config.toml")
-    if default_cfg.exists():
-        with default_cfg.open("rb") as f:
-            print(f"[配置] 加载默认配置：{default_cfg}")
-            return cast(dict[str, Any], tomllib.load(f)), cli_args
-    return {}, cli_args
-
-
-def _load_dataframe(data_path: pathlib.Path) -> pd.DataFrame:
-    suffix = data_path.suffix.lower()
-    if suffix == ".dta":
-        return cast(pd.DataFrame, pd.read_stata(data_path))
-    if suffix == ".csv":
-        return cast(pd.DataFrame, pd.read_csv(data_path))
-    if suffix in (".parquet", ".pq"):
-        return cast(pd.DataFrame, pd.read_parquet(data_path))
-    raise ValueError(f"不支持的文件格式：{suffix}（支持 .dta / .csv / .parquet）")
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -130,18 +98,11 @@ def _write_and_plot(
     rm_plot.plot_from_files(results_path=results_path, meta_path=meta_path, output_path=output_path)
 
 
-def _safe_unlink(path: pathlib.Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-
-
 def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path, keep_temp: bool) -> None:
     if keep_temp:
         return
-    _safe_unlink(results_path)
-    _safe_unlink(meta_path)
+    rm_common.safe_unlink(results_path)
+    rm_common.safe_unlink(meta_path)
 
 
 def _run_python_pair(
@@ -280,7 +241,7 @@ def _run_python_pair(
 
 def main() -> None:
     try:
-        cfg, cli_args = _load_toml_config(sys.argv[1:])
+        cfg, cli_args = rm_common.load_toml_config(sys.argv[1:])
     except FileNotFoundError as exc:
         print(f"错误：{exc}", file=sys.stderr)
         sys.exit(1)
@@ -328,7 +289,7 @@ def main() -> None:
 
     data_path = pathlib.Path(args.data).expanduser()
     print(f"读取数据：{data_path}")
-    df = _load_dataframe(data_path)
+    df = rm_common.load_dataframe(data_path)
     print(f"数据读取完成：{len(df):,} 行 × {len(df.columns)} 列")
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
