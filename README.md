@@ -1,11 +1,12 @@
 # regression_monkey
 
-作者：`zhaoxun@sjtu`
+作者：`zhao_xun@sjtu.edu.cn`
 
 这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。脚本会枚举控制变量的全部合法组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出图片与显著性汇总表。
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
 
+![描述](assets/screenshot.png)
 
 ## 项目文件
 
