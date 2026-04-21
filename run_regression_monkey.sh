@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-uv run regression_monkey_stata.py regression_monkey_config.toml
+uv run regression_monkey.py regression_monkey_config.toml --engine stata

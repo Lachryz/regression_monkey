@@ -28,7 +28,7 @@ from typing import Any, cast
 
 import pandas as pd
 
-import regression_monkey as rm
+import regression_monkey_py as rm
 
 try:
     import tomllib
@@ -196,11 +196,11 @@ def _write_reghdfe_do(
 ) -> None:
     absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
     subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
+    _ = log_path
     lines = [
         "version 18.0",
         "clear all",
         "set more off",
-        f'log using {_stata_quote(str(log_path))}, replace text',
         "capture which reghdfe",
         "if _rc {",
         '    di as error "reghdfe not installed in this Stata environment."',
@@ -237,15 +237,41 @@ def _write_reghdfe_do(
 
     lines.extend([
         "postclose `posth'",
-        "log close",
         "exit 0",
     ])
     do_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _run_stata_do(stata_path: str, do_path: pathlib.Path, cwd: pathlib.Path) -> None:
-    cmd = [stata_path, "-b", "do", str(do_path)]
+    cmd = [stata_path, "-b", "do", do_path.name]
     subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def _tail_text(path: pathlib.Path, max_lines: int = 80) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return "(log file not found)"
+    return "\n".join(lines[-max_lines:])
+
+
+def _ensure_stata_result_exists(
+    *,
+    results_dta: pathlib.Path,
+    do_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> None:
+    if results_dta.exists():
+        return
+    log_tail = _tail_text(log_path)
+    raise RuntimeError(
+        "Stata did not create the expected result file.\n"
+        f"Expected result: {results_dta.resolve()}\n"
+        f"Do file: {do_path.resolve()}\n"
+        f"Log file: {log_path.resolve()}\n"
+        "Stata log tail:\n"
+        f"{log_tail}"
+    )
 
 
 def _safe_unlink(path: pathlib.Path) -> None:
@@ -298,11 +324,137 @@ def _records_from_stata_dta(
     return records
 
 
+def run_stata_engine(
+    *,
+    df: pd.DataFrame,
+    data_path: pathlib.Path,
+    args: argparse.Namespace,
+    controls_test: rm.ControlSpecInput,
+    controls_must: rm.ControlSpecInput,
+    controls_test_flat: list[str],
+    controls_test_slots: list[rm.ControlSlot],
+    controls_must_flat: list[str],
+    controls_must_slots: list[rm.ControlSlot],
+    matrix_controls: list[str],
+    spec_flags: dict[str, bool],
+    run_output_dir: pathlib.Path,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    _ = controls_test, controls_must
+    df, var_map, fmt = _prepare_auto_dataframe(
+        df=df,
+        specs=spec_flags,
+        firm_fe=args.firm_fe,
+        ind_fe=args.ind_fe,
+        time_fe=args.time_fe,
+        region_fe=args.region_fe,
+    )
+    dta_path = _ensure_stata_dta(df, data_path, run_output_dir)
+    outputs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    for y_var, x_var in itertools.product(args.y, args.x):
+        pair_items: list[dict[str, Any]] = []
+        for spec_def in rm._SPEC_CATALOG:
+            spec_name = spec_def["name"]
+            if not spec_flags.get(spec_name, False):
+                continue
+            if spec_def["needs_region"] and args.region_fe is None:
+                print(f"[跳过] {spec_name}：需要 Region_FE 但未指定")
+                continue
+
+            do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.do"
+            log_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.log"
+            dta_result_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_stata_results.dta"
+            results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_results.csv"
+            meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_plot_meta.json"
+            output_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.png"
+            title_suffix = spec_def["help"].format(**fmt)
+
+            print(f"[Stata] 运行规格：{spec_name}")
+            _write_reghdfe_do(
+                do_path=do_path.resolve(),
+                log_path=log_path.resolve(),
+                data_path=dta_path.resolve(),
+                results_dta=dta_result_path.resolve(),
+                y=y_var,
+                x=x_var,
+                controls_must=controls_must_flat,
+                controls_must_slots=controls_must_slots,
+                controls_test=controls_test_flat,
+                controls_test_slots=controls_test_slots,
+                spec_def=spec_def,
+                var_map=var_map,
+            )
+            _run_stata_do(args.stata_path, do_path, run_output_dir)
+            _ensure_stata_result_exists(
+                results_dta=dta_result_path,
+                do_path=do_path,
+                log_path=log_path,
+            )
+            records = _records_from_stata_dta(
+                dta_result_path,
+                controls_must_slots=controls_must_slots,
+                controls_test_slots=controls_test_slots,
+            )
+            if not records:
+                print(f"[Stata] {spec_name} 未返回有效回归结果")
+                print(f"[Stata] 已保留调试文件：{do_path.name}, {log_path.name}, {dta_result_path.name}")
+                continue
+
+            rm.write_analysis_artifacts(
+                records=records,
+                results_path=results_path,
+                meta_path=meta_path,
+                meta={
+                    "engine": "stata",
+                    "spec_name": spec_name,
+                    "y": y_var,
+                    "x": x_var,
+                    "controls_test_flat": controls_test_flat,
+                    "controls_must_flat": controls_must_flat,
+                    "matrix_controls": matrix_controls,
+                    "show_special_markers": True,
+                    "fig_width": args.fig_width,
+                    "dpi": args.dpi,
+                    "title_suffix": title_suffix,
+                    "output_path": str(output_path),
+                },
+            )
+            fe_cols = _spec_fe_labels(spec_def, var_map)
+            clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
+            sig_rows = rm._build_sig_rows(
+                records=records,
+                y=y_var,
+                x=x_var,
+                controls_must=controls_must_flat,
+                controls_test=controls_test_flat,
+                fe_cols=fe_cols,
+                clust_cols=clust_cols,
+                vce_label="robust" if spec_def["vce"] == "robust" else None,
+            )
+            pair_items.append({
+                "records": records,
+                "sig_rows": sig_rows,
+                "results_path": results_path,
+                "meta_path": meta_path,
+                "output_path": output_path,
+            })
+
+            if not args.keep_temp:
+                _safe_unlink(do_path)
+                _safe_unlink(log_path)
+                _safe_unlink(dta_result_path)
+        outputs[(y_var, x_var)] = pair_items
+
+    if not args.keep_temp and dta_path != data_path:
+        _safe_unlink(dta_path)
+    return outputs
+
+
 def main() -> None:
     cfg, cli_args = _load_toml_config(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="regression_monkey_stata",
-        description="Use Stata batch mode + reghdfe to run specification-curve regressions.",
+        description="Run Stata/reghdfe analysis and write standard Regression Monkey result files.",
     )
     parser.add_argument("--data", metavar="FILE")
     parser.add_argument("--y", metavar="VAR", nargs="+")
@@ -326,7 +478,7 @@ def main() -> None:
         allowed = {
             "data", "y", "x", "controls", "controls_test", "controls_must",
             "output", "dpi", "fig_width", "firm_fe", "ind_fe", "time_fe",
-            "region_fe", "stata_path",
+            "region_fe", "stata_path", "keep_temp",
         } | set(rm._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
@@ -334,18 +486,11 @@ def main() -> None:
     args = parser.parse_args(cli_args)
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
     controls_must = list(args.controls_must) if args.controls_must else []
-    try:
-        controls_test_flat, controls_test_slots = rm._normalize_controls_test(controls_test)
-        controls_must_flat, controls_must_slots = rm._normalize_controls_must(controls_must)
-    except ValueError as exc:
-        parser.error(str(exc))
-    varying_must_controls = rm._varying_must_controls(controls_must_slots)
-    matrix_controls = varying_must_controls + controls_test_flat
+    controls_test_flat, controls_test_slots = rm._normalize_controls_test(controls_test)
+    controls_must_flat, controls_must_slots = rm._normalize_controls_must(controls_must)
+    matrix_controls = rm._varying_must_controls(controls_must_slots) + controls_test_flat
     if not args.data or not args.y or not args.x:
         parser.error("必须提供 data / y / x（可通过 TOML 或 CLI 指定）")
-    if not controls_test and not controls_must:
-        parser.error("至少提供一类控制变量：controls_test/controls 或 controls_must")
-
     spec_flags = {name: getattr(args, name, False) for name in rm._ALL_SPEC_NAMES}
     if not any(spec_flags.values()):
         parser.error("当前 Stata 脚本仅支持自动规格模式，请至少启用一个 absorb_* flag。")
@@ -354,158 +499,27 @@ def main() -> None:
     print(f"读取数据：{data_path}")
     df = _load_dataframe(data_path)
     print(f"数据读取完成：{len(df):,} 行 × {len(df.columns)} 列")
-
-    df, var_map, fmt = _prepare_auto_dataframe(
-        df=df,
-        specs=spec_flags,
-        firm_fe=args.firm_fe,
-        ind_fe=args.ind_fe,
-        time_fe=args.time_fe,
-        region_fe=args.region_fe,
-    )
-
-    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_root = pathlib.Path(args.output).expanduser().resolve()
     if output_root.suffix:
         output_root = output_root.parent
-    run_output_dir = output_root / run_timestamp
+    run_output_dir = output_root / datetime.now().strftime("%Y%m%d_%H%M%S")
     run_output_dir.mkdir(parents=True, exist_ok=True)
     print(f"输出目录：{run_output_dir}")
 
-    dta_path = _ensure_stata_dta(df, data_path, run_output_dir)
-    snapshot_config = {
-        "generated_at": run_timestamp,
-        "engine": "stata-reghdfe",
-        "stata_path": args.stata_path,
-        "data": str(args.data),
-        "y": list(args.y),
-        "x": list(args.x),
-        "controls_test": controls_test,
-        "controls_test_flat": controls_test_flat,
-        "controls_must": controls_must,
-        "controls_must_flat": controls_must_flat,
-        "output": str(output_root),
-        "run_output_dir": str(run_output_dir),
-        "dpi": args.dpi,
-        "fig_width": args.fig_width,
-        "firm_fe": args.firm_fe,
-        "ind_fe": args.ind_fe,
-        "time_fe": args.time_fe,
-    }
-    if args.region_fe:
-        snapshot_config["region_fe"] = args.region_fe
-    snapshot_config.update({name: enabled for name, enabled in spec_flags.items() if enabled})
-    rm._write_config_snapshot(snapshot_config, run_output_dir / "config_snapshot.toml")
-
-    combos = list(itertools.product(args.y, args.x))
-    all_sig_rows: list[dict[str, Any]] = []
-    total_sig_specs = 0
-    combo_summaries: list[dict[str, Any]] = []
-
-    for idx, (y_var, x_var) in enumerate(combos, 1):
-        print(f"\n{'#'*60}")
-        print(f"[{idx}/{len(combos)}]  Y = {y_var}  ×  X = {x_var}")
-        print("#" * 60)
-        pair_sig_rows: list[dict[str, Any]] = []
-        pair_total_specs = 0
-        for spec_def in rm._SPEC_CATALOG:
-            spec_t0 = perf_counter()
-            spec_name = spec_def["name"]
-            if not spec_flags.get(spec_name, False):
-                continue
-            if spec_def["needs_region"] and args.region_fe is None:
-                print(f"[跳过] {spec_name}：需要 Region_FE 但未指定")
-                continue
-
-            do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.do"
-            log_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.log"
-            dta_result_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_stata_results.dta"
-            out_png = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.png"
-            title_suffix = spec_def["help"].format(**fmt)
-
-            print(f"[Stata] 运行规格：{spec_name}")
-            _write_reghdfe_do(
-                do_path=do_path,
-                log_path=log_path,
-                data_path=dta_path,
-                results_dta=dta_result_path,
-                y=y_var,
-                x=x_var,
-                controls_must=controls_must_flat,
-                controls_must_slots=controls_must_slots,
-                controls_test=controls_test_flat,
-                controls_test_slots=controls_test_slots,
-                spec_def=spec_def,
-                var_map=var_map,
-            )
-            _run_stata_do(args.stata_path, do_path, run_output_dir)
-            records = _records_from_stata_dta(
-                dta_result_path,
-                controls_must_slots=controls_must_slots,
-                controls_test_slots=controls_test_slots,
-            )
-            if not records:
-                print(f"[Stata] {spec_name} 未返回有效回归结果")
-                print(f"[Stata] 已保留调试文件：{do_path.name}, {log_path.name}, {dta_result_path.name}")
-                continue
-
-            rm._plot(
-                records=records,
-                y_name=y_var,
-                x_name=x_var,
-                controls_test=controls_test_flat,
-                controls_must=controls_must_flat,
-                matrix_controls=matrix_controls,
-                show_special_markers=True,
-                fig_width=args.fig_width,
-                dpi=args.dpi,
-                output_path=str(out_png),
-                title_suffix=title_suffix,
-                elapsed_seconds_preplot=perf_counter() - spec_t0,
-            )
-            fe_cols = _spec_fe_labels(spec_def, var_map)
-            clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
-            pair_rows = rm._build_sig_rows(
-                records=records,
-                y=y_var,
-                x=x_var,
-                controls_must=controls_must_flat,
-                controls_test=controls_test_flat,
-                fe_cols=fe_cols,
-                clust_cols=clust_cols,
-                vce_label="robust" if spec_def["vce"] == "robust" else None,
-            )
-            all_sig_rows.extend(pair_rows)
-            pair_sig_rows.extend(pair_rows)
-            total_sig_specs += len(records)
-            pair_total_specs += len(records)
-
-            if not args.keep_temp:
-                _safe_unlink(do_path)
-                _safe_unlink(log_path)
-                _safe_unlink(dta_result_path)
-
-        combo_summaries.append({
-            "y": y_var,
-            "x": x_var,
-            "n_specs": pair_total_specs,
-            "n_sig": len(pair_sig_rows),
-            "star_counts": rm._sig_star_counts(pair_sig_rows),
-        })
-
-    rm._export_sig_table(
-        rows=all_sig_rows,
-        output_path=str(run_output_dir / "sig.csv"),
-        n_specs=total_sig_specs,
-        print_summary=False,
+    run_stata_engine(
+        df=df,
+        data_path=data_path,
+        args=args,
+        controls_test=controls_test,
+        controls_must=controls_must,
+        controls_test_flat=controls_test_flat,
+        controls_test_slots=controls_test_slots,
+        controls_must_flat=controls_must_flat,
+        controls_must_slots=controls_must_slots,
+        matrix_controls=matrix_controls,
+        spec_flags=spec_flags,
+        run_output_dir=run_output_dir,
     )
-    for summary in combo_summaries:
-        print(
-            f"Y = {summary['y']}  ×  X = {summary['x']} "
-            f"{rm._format_sig_summary(summary['n_sig'], summary['n_specs'], summary['star_counts'])}"
-        )
-    if not args.keep_temp and dta_path != data_path:
-        _safe_unlink(dta_path)
 
 
 if __name__ == "__main__":

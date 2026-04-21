@@ -2,7 +2,7 @@
 
 作者：`zhao_xun@sjtu.edu.cn`
 
-这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。脚本会枚举控制变量的全部合法组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出图片与显著性汇总表。
+这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。工具会枚举控制变量的全部合法组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出标准结果文件、图片与显著性汇总表。
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
 
@@ -10,7 +10,10 @@
 
 ## 项目文件
 
-- `regression_monkey.py`：主脚本
+- `regression_monkey.py`：主入口，只负责读取配置、调度分析引擎、调用绘图脚本、导出总汇总
+- `regression_monkey_py.py`：Python 分析引擎，只负责枚举规格、回归估计和导出标准结果文件
+- `regression_monkey_stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
+- `regression_monkey_plot.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
 - `regression_monkey_config.toml`：推荐使用的配置文件
 - `run_regression_monkey.sh`：示例启动脚本
 
@@ -44,6 +47,14 @@ uv run regression_monkey.py regression_monkey_config.toml
 ```bash
 uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
 ```
+
+默认使用 Python 引擎。也可以在 TOML 中设置 `engine = "stata"`，或在命令行指定：
+
+```bash
+uv run regression_monkey.py regression_monkey_config.toml --engine stata
+```
+
+主入口会先调用对应分析引擎写出临时的 `*_results.csv` 和 `*_plot_meta.json`，再调用 `regression_monkey_plot.py` 生成 PNG。PNG 绘制成功后，主入口默认会删除这两个临时文件；如需保留用于调试或重画，请传 `--keep-temp`。
 
 这种方式最适合日常批量运行，因为：
 
@@ -220,6 +231,20 @@ outputs/20260414_174122/
 - 多张 PNG 图片：每个 `y × x × 规格` 对应一张图
 - `sig.csv`：全运行合并后的显著性汇总表
 
+如果运行时传入 `--keep-temp`，目录中还会保留：
+
+- `*_results.csv`：每个 `y × x × 规格` 的标准回归结果文件
+- `*_plot_meta.json`：对应结果文件的绘图元数据
+- Stata 引擎的 `.do`、`.log`、`*_stata_results.dta` 和临时输入 `.dta`
+
+标准结果文件字段固定为：
+
+```text
+coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi,controls_test,controls_all,is_full,obs
+```
+
+其中 `controls_test` 和 `controls_all` 使用 JSON 数组字符串保存，避免控制变量名中出现逗号或特殊字符时产生歧义。
+
 ### 图片命名
 
 默认图片名格式为：
@@ -327,22 +352,65 @@ Y = FAATT  ×  X = ln_qual 无 90% 及以上显著的规格
 
 ## Stata 批处理模式
 
-仓库还提供 `regression_monkey_stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎：
+仓库还提供 `regression_monkey_stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎。推荐仍然通过主入口调度：
 
 ```bash
-uv run regression_monkey_stata.py regression_monkey_config.toml
+uv run regression_monkey.py regression_monkey_config.toml --engine stata
 ```
+
+分析脚本会为每个 `y × x × 规格` 输出标准结果文件：
+
+- `*_results.csv`：回归结果、置信区间、控制变量组合和样本量
+- `*_plot_meta.json`：绘图需要的变量名、控制变量顺序、标题和输出路径
+
+绘图脚本可以单独重画已有结果，不需要重新读取原始数据或重新回归：
+
+```bash
+uv run regression_monkey_plot.py --results path/to/foo_results.csv --meta path/to/foo_plot_meta.json --output path/to/foo.png
+```
+
+通过主入口运行时，这两个标准结果文件默认会在 PNG 绘制成功后删除。需要单独重画时，请在主入口运行时加上 `--keep-temp`。
 
 这一模式下：
 
-- Python 负责生成 `.do` 文件、调用 Stata、读取结果并复用同一套绘图逻辑
+- Stata 引擎负责生成 `.do` 文件、调用 Stata、读取结果并导出标准结果文件
+- 主入口负责调用独立绘图脚本；绘图脚本不读取原始数据，也不依赖 Stata
 - `absorb()` 和 `vce()` 直接写成 `reghdfe` 形式，例如 `absorb(i.code i.year#i.ind)`
 - 每个规格的 `obs` 由 `reghdfe` 基于该规格的有效样本自动决定，不会因为 `controls_test` 被统一提前删样本
 - `controls_must` / `controls_test` 的混合结构语义与 Python 引擎保持一致
 - 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
-- 控制变量矩阵使用栅格化绘图，减少大量 patch 带来的渲染开销
-- 预计算 Gram 矩阵与 `Z'y`，降低每个子规格的 OLS 求解成本
-- 限制底层 BLAS 线程数，避免“多进程 × 多线程”抢占 CPU
+
+## 开发与验证
+
+推荐的基础检查：
+
+```bash
+uv run python -m py_compile regression_monkey.py regression_monkey_py.py regression_monkey_stata.py regression_monkey_plot.py
+```
+
+用现有 TOML 跑 Python 引擎端到端：
+
+```bash
+uv run regression_monkey.py regression_monkey_config.toml --engine python --n-jobs 1
+```
+
+只重画已有结果：
+
+```bash
+uv run regression_monkey_plot.py \
+  --results outputs/<timestamp>/<name>_results.csv \
+  --meta outputs/<timestamp>/<name>_plot_meta.json \
+  --output outputs/<timestamp>/<name>_replot.png
+```
+
+实现约定：
+
+- `regression_monkey.py` 保持轻量，只做配置、调度、汇总和调用绘图
+- `regression_monkey_py.py` 和 `regression_monkey_stata.py` 不直接生成 PNG，只写标准结果文件和绘图元数据
+- `regression_monkey_plot.py` 只读取 `*_results.csv` 和 `*_plot_meta.json`
+- 主入口绘图成功后默认删除每张图对应的 `*_results.csv` 和 `*_plot_meta.json`；`--keep-temp` 用于保留这些中间文件
+- 新增分析字段时，需要同步更新标准结果文件的读写逻辑和绘图元数据
+- 输出目录、文件名和 `sig.csv` 结构应尽量保持向后兼容
 
 如果希望更稳定地观察运行状态，可以注意终端中的进度输出。枚举规格时程序会打印总任务块数，并周期性输出进度百分比。
 
