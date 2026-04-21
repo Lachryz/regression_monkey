@@ -1725,11 +1725,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     ax_p.set_facecolor("white")
     p_block_count = np.where(
         p_values <= 0.01,
-        3,
+        1,
         np.where(
             p_values <= 0.05,
             2,
-            np.where(p_values <= 0.10, 1, 4),
+            np.where(p_values <= 0.10, 3, 4),
         ),
     )
     p_block_color = np.full(n, _CPBAR_INS, dtype=object)
@@ -1737,7 +1737,9 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     p_block_color[p_values <= 0.05] = _C95
     p_block_color[p_values <= 0.01] = _C99
 
-    p_gap = 0.16
+    p_gap = 0.10
+    p_outer_pad_x = 0.12
+    p_outer_pad_y = 0.24
     p_half_w = 0.5 - p_gap
     p_half_h = 0.5 - p_gap
     for i in range(n):
@@ -1775,11 +1777,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             ax_p.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=4)
     for si in np.where(is_sign_switch)[0]:
         ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
-    ax_p.set_xlim(-0.5, n - 0.5)
-    ax_p.set_ylim(-4.0, 4.0)
+    ax_p.set_xlim(-0.5 - p_outer_pad_x, n - 0.5 + p_outer_pad_x)
+    ax_p.set_ylim(-4.0 - p_outer_pad_y, 4.0 + p_outer_pad_y)
     ax_p.set_ylabel("P", fontsize=8)
     ax_p.set_yticks([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
-    ax_p.set_yticklabels(["---", "--", "-", "o", "+", "++", "+++"], fontfamily="monospace")
+    ax_p.set_yticklabels(["-", "--", "---", "o", "+++", "++", "+"], fontfamily="monospace")
     ax_p.tick_params(axis="y", labelsize=8)
     ax_p.tick_params(axis="x", bottom=False, labelbottom=False)
     ax_p.spines[["top", "right", "left", "bottom"]].set_visible(True)

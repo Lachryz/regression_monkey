@@ -6,6 +6,7 @@
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
 
+
 ## 项目文件
 
 - `regression_monkey.py`：主脚本
@@ -70,12 +71,13 @@ uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
 两者语义不同：
 
 - `controls_must`
+
   - 嵌套组表示“必须包含其中之一”
   - 例如 `controls_must = ["Lev", ["ROA", "ROE"]]`
   - 每个规格都必须带 `ROA` 或 `ROE` 其中一个，不能两个都没有，也不能两个同时出现
   - 本质上相当于增加一个必选控制槽位，因此规格数乘以组大小
-
 - `controls_test`
+
   - 嵌套组表示“最多出现其中一个”
   - 例如 `controls_test = ["Big4", ["ListAge1", "FirmAge1"]]`
   - 每个规格可以选 `ListAge1`、或 `FirmAge1`、或两个都不选，但不能同时选两个
