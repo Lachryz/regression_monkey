@@ -558,4 +558,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt as exc:
+        print("\n已中断。", file=sys.stderr)
+        if exc.args:
+            print(str(exc.args[0]), file=sys.stderr)
+        sys.exit(130)

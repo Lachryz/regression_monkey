@@ -283,20 +283,20 @@ coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi
   - 95% CI：灰
   - 90% CI：深灰
 - 系数点按显著性着色：
-  - `p < 0.01`：黄色
-  - `p < 0.05`：绿色
-  - `p < 0.10`：蓝色
+  - `p < 0.01` / 3 星显著：`#FF2600`
+  - `p < 0.05` / 2 星显著：`#00F900` Spring
+  - `p < 0.10` / 1 星显著：`#0433FF` BlueBerry
   - 不显著：黑色
 - `Star` 面板按显著性星级显示格数，方向由系数符号决定：
   - 不显著：中轴黑色 `0` 线
-  - 1 星显著：蓝色 1 格
-  - 2 星显著：橙色 2 格
-  - 3 星显著：紫色 3 格
+  - 1 星显著：`#0433FF` BlueBerry 1 格
+  - 2 星显著：`#00F900` Spring 2 格
+  - 3 星显著：`#FF2600` 3 格
 - 三类特殊规格使用同一套“实心点 + 彩色外圈 + 同色竖线”样式：
-  - 全控制变量规格：红色
+  - 全控制变量规格：`#FF2F92`
   - 无 `controls_test` 规格：橙色
   - 系数最接近 0 的规格：蓝色，仅当系数序列跨过 `0` 时才绘制
-- 红色 `Full controls` 特殊点后绘制，覆盖在普通点、橙色点和蓝色点之上
+- `#FF2F92` `Full controls` 特殊点后绘制，覆盖在普通点、橙色点和蓝色点之上
 - 控制变量矩阵中会显示所有会变化的控制变量：
   - 全部 `controls_test`
   - `controls_must` 中以嵌套 list 给出的替代组成员
@@ -390,6 +390,8 @@ uv run regression_monkey_plot.py --results path/to/foo_results.csv --meta path/t
 - `absorb()` 和 `vce()` 直接写成 `reghdfe` 形式，例如 `absorb(i.code i.year#i.ind)`
 - 每个规格的 `obs` 由 `reghdfe` 基于该规格的有效样本自动决定，不会因为 `controls_test` 被统一提前删样本
 - `controls_must` / `controls_test` 的混合结构语义与 Python 引擎保持一致
+
+Stata batch 启动后，控制台会打印当前 Stata 子进程 PID，以及对应的 `.do` / `.log` 文件名。若 Python 进程收到外部 `SIGINT`（例如终端、运行器或脚本控制发出的中断信号），主入口会停止 Stata 子进程并以退出码 130 结束，同时打印 `.do`、`.log` 的绝对路径和 Stata 日志尾部，不再显示 Python traceback。遇到长时间运行或异常中断时，优先查看对应 `.log`，确认 Stata 是仍在执行大量 reghdfe 规格，还是在某条命令处报错。
 - 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
 
 ## 开发与验证

@@ -1800,20 +1800,20 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     # ── 显著性颜色（按 t 统计量） ───────────────────────
     p_values = np.array([r["p_value"] for r in records])
 
-    sig99  = p_values < 0.01                      # 99% 显著 → 黄色
-    sig95  = (p_values < 0.05) & ~sig99           # 95% 显著 → 草绿
-    sig90  = (p_values < 0.10) & ~sig99 & ~sig95  # 90% 显著 → 蓝色
-    insig  = ~sig99 & ~sig95 & ~sig90             # 不显著   → 深灰
+    sig99  = p_values < 0.01                      # 3 stars → 红
+    sig95  = (p_values < 0.05) & ~sig99           # 2 stars → Spring
+    sig90  = (p_values < 0.10) & ~sig99 & ~sig95  # 1 star  → BlueBerry
+    insig  = ~sig99 & ~sig95 & ~sig90             # 不显著   → 黑
 
-    _C99  = "#FFC107"   # 黄
-    _C95  = "#7CCD7C"   # 草绿
-    _C90  = "#1F77B4"   # 蓝
+    _C90  = "#0433FF"   # BlueBerry（1 star）
+    _C95  = "#00F900"   # Spring（2 stars）
+    _C99  = "#FF2600"   # 红（3 stars）
     _CINS = "#000000"   # 黑（不显著）
-    _CSTAR1 = "#1F77B4"  # 蓝（1 star）
-    _CSTAR2 = "#FF8C00"  # 橙（2 stars）
-    _CSTAR3 = "#7B2CBF"  # 紫（3 stars）
+    _CSTAR1 = _C90      # BlueBerry（1 star）
+    _CSTAR2 = _C95      # Spring（2 stars）
+    _CSTAR3 = _C99      # 红（3 stars）
     _CSTAR0 = "#000000"  # 黑（Star 面板中的不显著 0 线）
-    _CFUL = "#cc2222"   # 红（全变量规格外圈）
+    _CFUL = "#FF2F92"   # Full controls 特殊规格竖线/外圈
     _CNOC = "#ff8c00"   # 橙（无 test 控制变量规格外圈）
     _CSWITCH = "#2255cc"  # 蓝（最接近 0 的系数点）
 
@@ -2066,10 +2066,10 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                 zorder=2,
             )
 
-    # 全变量列红色虚线
+    # Full controls 特殊规格竖线
     if show_special_markers:
         for fi in np.where(is_full)[0]:
-            ax2.axvline(fi, color="#cc2222", lw=1.1, ls="-", zorder=3)
+            ax2.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=3)
         for ni in np.where(is_nocontrol)[0]:
             ax2.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=3)
     for si in np.where(is_sign_switch)[0]:

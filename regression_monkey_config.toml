@@ -14,17 +14,15 @@ data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my
 # FCAR_0_1 FCAR_2_61 FSpeed Fpostfiling_rmse
 # FAATT FPATT FMATT FMPATT FATT
 # Fminority
-
+# error: , "analyst_error_fiscal_f", "analyst_error_fiscal_pa", "analyst_error_fiscal_a", "analyst_error_annual_f", "analyst_error_annual_pa", "analyst_error_annual_a", "analyst_error_m_f", "analyst_error_m_pa", "analyst_error_m_a", "analyst_error_2m_f", "analyst_error_2m_pa", "analyst_error_2m_a", "analyst_error_3m_f"
+# dispersion: "analyst_dispersion_quarter_f", "analyst_dispersion_quarter_pa", "analyst_dispersion_quarter_a", "analyst_dispersion_fiscal_f", "analyst_dispersion_fiscal_pa", "analyst_dispersion_fiscal_a", "analyst_dispersion_annual_f", "analyst_dispersion_annual_pa", "analyst_dispersion_annual_a", "analyst_dispersion_m_f", "analyst_dispersion_m_pa", "analyst_dispersion_m_a", "analyst_dispersion_2m_f", "analyst_dispersion_2m_pa", "analyst_dispersion_2m_a"
 # "cnt_char", "readability"
 
-y = ["analyst_error_quarter_f", "analyst_dispersion_quarter_f", "analyst_error_quarter_pa", "analyst_dispersion_quarter_pa", "analyst_error_quarter_a", "analyst_dispersion_quarter_a", "analyst_error_fiscal_f", "analyst_dispersion_fiscal_f", "analyst_error_fiscal_pa", "analyst_dispersion_fiscal_pa", "analyst_error_fiscal_a", "analyst_dispersion_fiscal_a", "analyst_error_annual_f", "analyst_dispersion_annual_f", "analyst_error_annual_pa", "analyst_dispersion_annual_pa", "analyst_error_annual_a", "analyst_dispersion_annual_a", "analyst_error_m_f", "analyst_dispersion_m_f", "analyst_error_m_pa", "analyst_dispersion_m_pa", "analyst_error_m_a", "analyst_dispersion_m_a", "analyst_error_2m_f", "analyst_dispersion_2m_f", "analyst_error_2m_pa", "analyst_dispersion_2m_pa", "analyst_error_2m_a", "analyst_dispersion_2m_a", "analyst_error_3m_f"]          # 被解释变量（可多个，与 x 两两组合）, "FAATT", "FPATT"
-x = ["ln_quant"]                                # 主解释变量（可多个）, "ln_quant", "ln_qual"
-controls_test = [
-     "Big4", "Top1", "ListAge1", "Dual", "Indep", "Shares", "INST", "cnt_char", "readability"
-]  # 参与 2^K 组合枚举的控制变量，建议不超过12个，否则耗时会指数级增加
-controls_must = [
-     "Lev", "Size", "ROA", "SOE"
-]  # 强制纳入回归、但不参与组合枚举的控制变量
+
+y = ["analyst_error_m_f", "analyst_error_m_pa", "analyst_error_m_a"]
+x = ["ln_quant"]
+controls_test = ["SOE", "Big4", "Top1", "ListAge1", "Dual", "Indep", "Shares", "INST", "readability"]
+controls_must = ["Lev", "Size", "ROA", "SOE"]
 
 # ── 输出 ──────────────────────────────────────────────────────
 # output 为输出目录；程序会在其中自动创建时间戳子目录，并固定导出 PNG

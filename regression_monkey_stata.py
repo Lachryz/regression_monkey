@@ -20,7 +20,9 @@ from __future__ import annotations
 from datetime import datetime
 import argparse
 import itertools
+import os
 import pathlib
+import signal
 import subprocess
 import sys
 from time import perf_counter
@@ -211,9 +213,50 @@ def _write_reghdfe_do(
     do_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _run_stata_do(stata_path: str, do_path: pathlib.Path, cwd: pathlib.Path) -> None:
+def _run_stata_do(
+    stata_path: str,
+    do_path: pathlib.Path,
+    log_path: pathlib.Path,
+    cwd: pathlib.Path,
+) -> None:
     cmd = [stata_path, "-b", "do", do_path.name]
-    subprocess.run(cmd, cwd=cwd, check=True)
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, start_new_session=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Stata executable not found: {stata_path}\n"
+            "Use --stata-path or set stata_path in the TOML config."
+        ) from exc
+    print(f"[Stata] PID={proc.pid}  do={do_path.name}  log={log_path.name}")
+    try:
+        returncode = proc.wait()
+    except KeyboardInterrupt as exc:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=10)
+            except ProcessLookupError:
+                pass
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+        log_tail = _tail_text(log_path)
+        raise KeyboardInterrupt(
+            "Stata batch run was interrupted.\n"
+            f"Do file: {do_path.resolve()}\n"
+            f"Log file: {log_path.resolve()}\n"
+            "Stata log tail:\n"
+            f"{log_tail}"
+        ) from exc
+    if returncode != 0:
+        log_tail = _tail_text(log_path)
+        raise RuntimeError(
+            f"Stata exited with status {returncode}.\n"
+            f"Do file: {do_path.resolve()}\n"
+            f"Log file: {log_path.resolve()}\n"
+            "Stata log tail:\n"
+            f"{log_tail}"
+        )
 
 
 def _tail_text(path: pathlib.Path, max_lines: int = 80) -> str:
@@ -347,7 +390,7 @@ def run_stata_engine(
                 spec_def=spec_def,
                 var_map=var_map,
             )
-            _run_stata_do(args.stata_path, do_path, run_output_dir)
+            _run_stata_do(args.stata_path, do_path, log_path, run_output_dir)
             _ensure_stata_result_exists(
                 results_dta=dta_result_path,
                 do_path=do_path,
