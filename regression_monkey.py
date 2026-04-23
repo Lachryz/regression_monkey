@@ -19,14 +19,15 @@ regression_monkey.py
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import argparse
+from collections import Counter, defaultdict
 import json
 import itertools
 import pathlib
 import sys
 from time import perf_counter
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import pandas as pd
 
@@ -81,6 +82,14 @@ def _spec_columns(spec_def: dict[str, Any], args: argparse.Namespace) -> tuple[l
     return fe_cols, clust_cols, vce_label
 
 
+def _drawable_auto_specs(spec_flags: dict[str, bool], region_fe: str | None) -> list[dict[str, Any]]:
+    return [
+        spec_def for spec_def in rm_py._SPEC_CATALOG
+        if spec_flags.get(spec_def["name"], False)
+        and not (spec_def["needs_region"] and region_fe is None)
+    ]
+
+
 def _write_and_plot(
     *,
     records: list[rm_py.SpecRecord],
@@ -105,6 +114,80 @@ def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path
     rm_common.safe_unlink(meta_path)
 
 
+def _format_plot_progress(done: int, total: int, *, width: int = 30) -> str:
+    if total <= 0:
+        return "[绘图进度] 无待绘制图片"
+    done = min(max(done, 0), total)
+    filled = round(width * done / total)
+    bar = "#" * filled + "-" * (width - filled)
+    pct = done * 100 / total
+    return f"[绘图进度] |{bar}| {done}/{total} ({pct:5.1f}%)"
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _fe_type_label(fe_keys: tuple[str, ...]) -> str:
+    return "+".join(fe_keys) if fe_keys else "none"
+
+
+class _PlotProgressEstimator:
+    def __init__(self, planned_fe_types: list[tuple[str, ...]]) -> None:
+        self.total = len(planned_fe_types)
+        self.done = 0
+        self.remaining = Counter(planned_fe_types)
+        self.samples: dict[tuple[str, ...], list[float]] = defaultdict(list)
+
+    def update(self, fe_type: tuple[str, ...], elapsed_seconds: float, output_name: str) -> str:
+        self.done += 1
+        if self.remaining[fe_type] > 0:
+            self.remaining[fe_type] -= 1
+        self.samples[fe_type].append(elapsed_seconds)
+
+        parts = [_format_plot_progress(self.done, self.total)]
+        if self.total:
+            parts.append(f"FE={_fe_type_label(fe_type)}")
+            parts.append(f"本张={_format_duration(elapsed_seconds)}")
+            eta = self.estimate_remaining_seconds()
+            if eta is None:
+                missing = [
+                    _fe_type_label(key)
+                    for key, count in self.remaining.items()
+                    if count > 0 and key not in self.samples
+                ]
+                parts.append("ETA=等待各FE类型首张样本")
+                if missing:
+                    parts.append(f"待样本={','.join(missing)}")
+            else:
+                finish_at = datetime.now() + timedelta(seconds=eta)
+                parts.append(f"剩余≈{_format_duration(eta)}")
+                parts.append(f"预计完成≈{finish_at:%H:%M:%S}")
+        parts.append(output_name)
+        return "  ".join(parts)
+
+    def estimate_remaining_seconds(self) -> float | None:
+        if self.total <= 0 or not self.remaining:
+            return 0.0
+        for fe_type, count in self.remaining.items():
+            if count > 0 and fe_type not in self.samples:
+                return None
+        remaining_seconds = 0.0
+        for fe_type, count in self.remaining.items():
+            if count <= 0:
+                continue
+            durations = self.samples[fe_type]
+            remaining_seconds += count * (sum(durations) / len(durations))
+        return remaining_seconds
+
+
 def _run_python_pair(
     *,
     df: pd.DataFrame,
@@ -120,37 +203,47 @@ def _run_python_pair(
     is_auto: bool,
     run_output_dir: pathlib.Path,
     resolved_n_jobs: int,
+    on_plot_done: Callable[[pathlib.Path, tuple[str, ...], float], None] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     pair_sig_rows: list[dict[str, Any]] = []
     pair_total_specs = 0
     pair_stem = f"{y_var}_{x_var}"
 
     if is_auto:
-        auto_results = rm_py.regression_monkey_auto(
-            df=df,
-            y=y_var,
-            x=x_var,
-            controls_test=controls_test,
-            controls_must=controls_must,
-            firm_fe=args.firm_fe,
-            ind_fe=args.ind_fe,
-            time_fe=args.time_fe,
-            region_fe=args.region_fe,
-            specs=spec_flags,
-            output_path=None,
-            dpi=args.dpi,
-            fig_width=args.fig_width,
-            n_jobs=resolved_n_jobs,
-            export_sig_table=False,
-            render_plot=False,
-        )
         fmt = {
             "firm": args.firm_fe,
             "ind": args.ind_fe,
             "time": args.time_fe,
             "region": args.region_fe or "region",
         }
-        for spec_name, records, _fig in auto_results:
+        enabled_spec_defs = [
+            spec_def for spec_def in rm_py._SPEC_CATALOG
+            if spec_flags.get(spec_def["name"], False)
+        ]
+        for spec_def in enabled_spec_defs:
+            spec_name = spec_def["name"]
+            spec_t0 = perf_counter()
+            auto_results = rm_py.regression_monkey_auto(
+                df=df,
+                y=y_var,
+                x=x_var,
+                controls_test=controls_test,
+                controls_must=controls_must,
+                firm_fe=args.firm_fe,
+                ind_fe=args.ind_fe,
+                time_fe=args.time_fe,
+                region_fe=args.region_fe,
+                specs={name: name == spec_name for name in rm_py._ALL_SPEC_NAMES},
+                output_path=None,
+                dpi=args.dpi,
+                fig_width=args.fig_width,
+                n_jobs=resolved_n_jobs,
+                export_sig_table=False,
+                render_plot=False,
+            )
+            if not auto_results:
+                continue
+            _, records, _fig = auto_results[0]
             spec_def = next(s for s in rm_py._SPEC_CATALOG if s["name"] == spec_name)
             out_png = run_output_dir / f"{pair_stem}_{spec_def['tag']}.png"
             results_path = run_output_dir / f"{pair_stem}_{spec_def['tag']}_results.csv"
@@ -179,6 +272,8 @@ def _run_python_pair(
                 meta_path=meta_path,
                 keep_temp=bool(args.keep_temp),
             )
+            if on_plot_done is not None:
+                on_plot_done(out_png, tuple(spec_def["fe_keys"]), perf_counter() - spec_t0)
             fe_cols, clust_cols, vce_label = _spec_columns(spec_def, args)
             rows = rm_py._build_sig_rows(records, y_var, x_var, controls_must_flat, controls_test_flat, fe_cols, clust_cols, vce_label)
             pair_sig_rows.extend(rows)
@@ -192,6 +287,7 @@ def _run_python_pair(
         print(f"已生成聚类变量：{clust2_col}")
         clust_cols.append(clust2_col)
 
+    spec_t0 = perf_counter()
     records, _fig = rm_py.regression_monkey(
         df=df,
         y=y_var,
@@ -234,6 +330,8 @@ def _run_python_pair(
         meta_path=meta_path,
         keep_temp=bool(args.keep_temp),
     )
+    if on_plot_done is not None:
+        on_plot_done(out_png, tuple(args.fe), perf_counter() - spec_t0)
     pair_sig_rows.extend(rm_py._build_sig_rows(records, y_var, x_var, controls_must_flat, controls_test_flat, list(args.fe), clust_cols))
     pair_total_specs += len(records)
     return pair_sig_rows, pair_total_specs
@@ -261,6 +359,13 @@ def main() -> None:
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
 
     args = parser.parse_args(cli_args)
+    try:
+        args.y = rm_py._expand_space_separated_names(args.y)
+        args.x = rm_py._expand_space_separated_names(args.x)
+        args.fe = rm_py._expand_space_separated_names(args.fe)
+        args.clust = rm_py._expand_space_separated_names(args.clust)
+    except ValueError as exc:
+        parser.error(str(exc))
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
     controls_must = list(args.controls_must) if args.controls_must else []
     try:
@@ -334,6 +439,47 @@ def main() -> None:
     all_sig_rows: list[dict[str, Any]] = []
     total_sig_specs = 0
     combo_summaries: list[dict[str, Any]] = []
+    planned_plot_fe_types: list[tuple[str, ...]] = []
+
+    if args.engine == "python":
+        if is_auto:
+            drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
+            planned_plot_fe_types = [
+                tuple(spec_def["fe_keys"])
+                for _combo in combos
+                for spec_def in drawable_specs
+            ]
+        else:
+            planned_plot_fe_types = [tuple(args.fe) for _combo in combos]
+    else:
+        drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
+        planned_plot_fe_types = [
+            tuple(spec_def["fe_keys"])
+            for _combo in combos
+            for spec_def in drawable_specs
+        ]
+
+    plot_progress = _PlotProgressEstimator(planned_plot_fe_types)
+
+    def on_plot_done(output_path: pathlib.Path, fe_type: tuple[str, ...], elapsed_seconds: float) -> None:
+        print(plot_progress.update(fe_type, elapsed_seconds, output_path.name))
+
+    def plot_stata_item(item: dict[str, Any]) -> None:
+        meta_path = item["meta_path"]
+        results_path = item["results_path"]
+        output_path = item["output_path"]
+        meta = rm_plot.load_plot_meta(meta_path)
+        meta["elapsed_seconds_preplot"] = float(item["elapsed_seconds"])
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        rm_plot.plot_from_files(results_path=results_path, meta_path=meta_path, output_path=output_path)
+        _cleanup_plot_handoff(
+            results_path=results_path,
+            meta_path=meta_path,
+            keep_temp=bool(args.keep_temp),
+        )
+        on_plot_done(output_path, tuple(item.get("fe_type", ())), float(item["elapsed_seconds"]))
+
+    print(f"{_format_plot_progress(0, plot_progress.total)}  总图片数：{plot_progress.total}")
 
     if args.engine == "stata":
         import regression_monkey_stata as rm_stata
@@ -351,6 +497,7 @@ def main() -> None:
             matrix_controls=matrix_controls,
             spec_flags=spec_flags,
             run_output_dir=run_output_dir,
+            on_item_ready=plot_stata_item,
         )
     else:
         stata_results = {}
@@ -376,23 +523,12 @@ def main() -> None:
                 is_auto=is_auto,
                 run_output_dir=run_output_dir,
                 resolved_n_jobs=resolved_n_jobs,
+                on_plot_done=on_plot_done,
             )
         else:
             pair_rows = []
             pair_total_specs = 0
             for item in stata_results.get((y_var, x_var), []):
-                meta_path = item["meta_path"]
-                results_path = item["results_path"]
-                output_path = item["output_path"]
-                meta = rm_plot.load_plot_meta(meta_path)
-                meta["elapsed_seconds_preplot"] = perf_counter() - pair_t0
-                meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-                rm_plot.plot_from_files(results_path=results_path, meta_path=meta_path, output_path=output_path)
-                _cleanup_plot_handoff(
-                    results_path=results_path,
-                    meta_path=meta_path,
-                    keep_temp=bool(args.keep_temp),
-                )
                 records = item["records"]
                 pair_rows.extend(item["sig_rows"])
                 pair_total_specs += len(records)

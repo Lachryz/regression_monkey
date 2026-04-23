@@ -119,25 +119,51 @@ def _normalize_control_spec(
 
     for item in controls:
         if isinstance(item, str):
-            slot = (item,)
+            names = item.split()
+            if not names:
+                raise ValueError(f"{field_name} 不能包含空字符串变量名")
+            slots = [(name,) for name in names]
         elif isinstance(item, (list, tuple)):
             if not item:
                 raise ValueError(f"{field_name} 中的替代组不能为空列表")
-            if not all(isinstance(v, str) and v for v in item):
-                raise ValueError(f"{field_name} 的替代组必须全部由非空字符串列名组成")
-            slot = tuple(item)
+            slot_names: list[str] = []
+            for value in item:
+                if not isinstance(value, str):
+                    raise ValueError(f"{field_name} 的替代组必须全部由非空字符串列名组成")
+                names = value.split()
+                if not names:
+                    raise ValueError(f"{field_name} 的替代组必须全部由非空字符串列名组成")
+                slot_names.extend(names)
+            slots = [tuple(slot_names)]
         else:
             raise ValueError(f"{field_name} 仅支持 str 或由 str 组成的 list/tuple")
 
-        dup = [name for name in slot if name in seen]
-        if dup:
-            raise ValueError(f"{field_name} 存在重复列名：{dup}")
+        for slot in slots:
+            dup_in_slot = [name for name in slot if slot.count(name) > 1]
+            if dup_in_slot:
+                raise ValueError(f"{field_name} 存在重复列名：{sorted(set(dup_in_slot))}")
+            dup = [name for name in slot if name in seen]
+            if dup:
+                raise ValueError(f"{field_name} 存在重复列名：{dup}")
 
-        control_slots.append(slot)
-        flat_controls.extend(slot)
-        seen.update(slot)
+            control_slots.append(slot)
+            flat_controls.extend(slot)
+            seen.update(slot)
 
     return flat_controls, control_slots
+
+
+def _expand_space_separated_names(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    """Expand flat variable-name lists where an item may contain whitespace-separated names."""
+    if values is None:
+        return []
+    names: list[str] = []
+    for value in values:
+        parts = value.split()
+        if not parts:
+            raise ValueError("变量列表不能包含空字符串变量名")
+        names.extend(parts)
+    return names
 
 
 def _normalize_controls_test(
@@ -1783,7 +1809,10 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     _C95  = "#7CCD7C"   # 草绿
     _C90  = "#1F77B4"   # 蓝
     _CINS = "#000000"   # 黑（不显著）
-    _CPBAR_INS = "#7a7a7a"  # 灰（p-value 条形图中的不显著）
+    _CSTAR1 = "#1F77B4"  # 蓝（1 star）
+    _CSTAR2 = "#FF8C00"  # 橙（2 stars）
+    _CSTAR3 = "#7B2CBF"  # 紫（3 stars）
+    _CSTAR0 = "#000000"  # 黑（Star 面板中的不显著 0 线）
     _CFUL = "#cc2222"   # 红（全变量规格外圈）
     _CNOC = "#ff8c00"   # 橙（无 test 控制变量规格外圈）
     _CSWITCH = "#2255cc"  # 蓝（最接近 0 的系数点）
@@ -1793,54 +1822,44 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     if np.any(coefs < 0) and np.any(coefs > 0):
         is_sign_switch[int(np.argmin(np.abs(coefs)))] = True
 
-    # ── p 值条形图 ─────────────────────────────────────
-    pbar_sig99 = p_values <= 0.01
-    pbar_sig95 = (p_values > 0.01) & (p_values <= 0.05)
-    pbar_sig90 = (p_values > 0.05) & (p_values <= 0.10)
-    pbar_insig = p_values > 0.10
-
-    bar_colors = np.full(n, _CPBAR_INS, dtype=object)
-    bar_colors[pbar_sig90] = _C90
-    bar_colors[pbar_sig95] = _C95
-    bar_colors[pbar_sig99] = _C99
-
-    p_values_signed = np.where(coefs < 0, -p_values, p_values)
-
+    # ── Star 条形图：方向由系数符号决定，格数由显著性星级决定 ─────
     ax_p.set_facecolor("white")
-    p_block_count = np.where(
-        p_values <= 0.01,
-        1,
+    star_abs = np.where(
+        p_values < 0.01,
+        3,
         np.where(
-            p_values <= 0.05,
+            p_values < 0.05,
             2,
-            np.where(p_values <= 0.10, 3, 4),
+            np.where(p_values < 0.10, 1, 0),
         ),
     )
-    p_block_color = np.full(n, _CPBAR_INS, dtype=object)
-    p_block_color[p_values <= 0.10] = _C90
-    p_block_color[p_values <= 0.05] = _C95
-    p_block_color[p_values <= 0.01] = _C99
+    star_colors = {
+        1: _CSTAR1,
+        2: _CSTAR2,
+        3: _CSTAR3,
+    }
 
     p_gap = 0.10
     p_outer_pad_x = 0.12
-    p_outer_pad_y = 0.24
+    p_outer_pad_y = 0.18
     p_half_w = 0.5 - p_gap
     p_half_h = 0.5 - p_gap
     for i in range(n):
-        blocks = int(p_block_count[i])
-        color_code = _CPBAR_INS
-        if p_values[i] <= 0.10:
-            color_code = _C90
-        if p_values[i] <= 0.05:
-            color_code = _C95
-        if p_values[i] <= 0.01:
-            color_code = _C99
-        if coefs[i] < 0:
-            rows = range(3, 3 - blocks, -1)   # 从中轴向下填充
-        else:
-            rows = range(4, 4 + blocks)        # 从中轴向上填充
-        for row in rows:
-            y_center = -3.5 + row
+        blocks = int(star_abs[i])
+        if blocks == 0:
+            ax_p.plot(
+                [i - p_half_w, i + p_half_w],
+                [0.0, 0.0],
+                color=_CSTAR0,
+                lw=1.0,
+                solid_capstyle="butt",
+                zorder=4,
+            )
+            continue
+        color_code = star_colors[blocks]
+        direction = -1 if coefs[i] < 0 else 1
+        for block_idx in range(blocks):
+            y_center = direction * (block_idx + 0.5)
             ax_p.add_patch(
                 mpatches.Rectangle(
                     (i - p_half_w, y_center - p_half_h),
@@ -1852,20 +1871,20 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                     zorder=2,
                 )
             )
-    ax_p.axhline(0, color="#cc2222", lw=0.9, ls="--", zorder=3)
+    ax_p.axhline(0, color="#cc2222", lw=0.9, ls="--", zorder=1)
     if show_special_markers and is_full.any():
         for fi in np.where(is_full)[0]:
-            ax_p.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
+            ax_p.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=5)
     if show_special_markers and is_nocontrol.any():
         for ni in np.where(is_nocontrol)[0]:
-            ax_p.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=4)
+            ax_p.axvline(ni, color=_CNOC, lw=1.1, ls="-", zorder=5)
     for si in np.where(is_sign_switch)[0]:
-        ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
+        ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=5)
     ax_p.set_xlim(-0.5 - p_outer_pad_x, n - 0.5 + p_outer_pad_x)
-    ax_p.set_ylim(-4.0 - p_outer_pad_y, 4.0 + p_outer_pad_y)
-    ax_p.set_ylabel("P", fontsize=8)
+    ax_p.set_ylim(-3.0 - p_outer_pad_y, 3.0 + p_outer_pad_y)
+    ax_p.set_ylabel("Star", fontsize=8)
     ax_p.set_yticks([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
-    ax_p.set_yticklabels(["-", "--", "---", "o", "+++", "++", "+"], fontfamily="monospace")
+    ax_p.set_yticklabels(["-3", "-2", "-1", "0", "+1", "+2", "+3"], fontfamily="monospace")
     ax_p.tick_params(axis="y", labelsize=8)
     ax_p.tick_params(axis="x", bottom=False, labelbottom=False)
     ax_p.spines[["top", "right", "left", "bottom"]].set_visible(True)

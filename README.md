@@ -2,6 +2,8 @@
 
 作者：`zhao_xun@sjtu.edu.cn`
 
+许可证：MIT License，见 [LICENSE](LICENSE)。
+
 这是一个独立运行的规格曲线分析工具，用于经济学/会计学实证中的稳健性检验。工具会枚举控制变量的全部合法组合，在吸收多维固定效应后逐一进行 OLS 回归，计算异方差稳健、单向聚类或 CGM 双向聚类标准误，并导出标准结果文件、图片与显著性汇总表。
 
 整体工作流与输出思路借鉴了 Stata 脚本 `spec_curve` 的做法，并在 Python 中扩展为更适合批量配置、自动导出和多规格运行的实现。
@@ -78,7 +80,9 @@ uv run regression_monkey.py regression_monkey_config.toml --engine stata
 `controls_test` 和 `controls_must` 现在都支持在 TOML / Python API 中使用混合结构：
 
 - 普通字符串：表示单个变量
+- 空格分隔字符串：表示多个连续普通变量，例如 `"var1 var2 var3"` 等价于 `"var1", "var2", "var3"`
 - 嵌套 list：表示一个互斥替代组
+- 嵌套 list 内也可以使用空格分隔字符串，例如 `["ROA ROE", "ROIC"]` 等价于 `["ROA", "ROE", "ROIC"]`
 
 两者语义不同：
 
@@ -99,22 +103,20 @@ uv run regression_monkey.py regression_monkey_config.toml --engine stata
 
 ```toml
 controls_test = [
-  "Big4",
+  "Big4 Top1",
   ["ListAge1", "FirmAge1"],
-  "Top1"
 ]
 
 controls_must = [
-  "Lev",
-  "Size",
-  ["ROA", "ROE"],
+  "Lev Size",
+  ["ROA ROE"],
   "SOE"
 ]
 ```
 
 注意：
 
-- CLI 的 `--controls-test` / `--controls-must` 仍然只能传平铺变量名
+- CLI 的 `--controls-test` / `--controls-must` 仍然只能表达平铺变量名；shell 已经会按空格拆成多个参数
 - 如果需要混合结构，请使用 `regression_monkey_config.toml` 或 Python API
 
 ## 自动模式
@@ -231,6 +233,10 @@ outputs/20260414_174122/
 - 多张 PNG 图片：每个 `y × x × 规格` 对应一张图
 - `sig.csv`：全运行合并后的显著性汇总表
 
+主入口会按启用规格逐个估计并立即绘制对应 PNG，不会等同一个 `y × x` 的全部规格都跑完后再集中出图；Stata 引擎也会在每个 reghdfe 规格返回结果后立刻绘图。
+主入口会根据本次运行的总图片数显示绘图进度条，每张 PNG 绘制完成后更新一次进度。
+进度条会按固定效应类型（例如 `firm+time`、`firm+_ind_time`）记录实际耗时；等本次运行涉及的每类固定效应都至少完成一张图后，开始显示预计剩余时间和预计完成时刻，并随后续结果动态更新。
+
 如果运行时传入 `--keep-temp`，目录中还会保留：
 
 - `*_results.csv`：每个 `y × x × 规格` 的标准回归结果文件
@@ -264,6 +270,7 @@ coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi
 当前图片是一个多面板输出，包含：
 
 - 标题面板：显示 `Regression Monkey`、`Y/X`、`specs/controls`、`absorb/vce`、`controls_must`、单图全过程耗时
+- `Star` 面板：按显著性星级和系数方向显示每个规格的显著性
 - 系数面板：主解释变量点估计，以及 90% / 95% / 99% 置信区间带
 - 控制变量矩阵：显示每个会随规格变化的控制变量是否被纳入
 - 描述性统计面板：显示 `obs` 的均值、分位数等
@@ -280,6 +287,11 @@ coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi
   - `p < 0.05`：绿色
   - `p < 0.10`：蓝色
   - 不显著：黑色
+- `Star` 面板按显著性星级显示格数，方向由系数符号决定：
+  - 不显著：中轴黑色 `0` 线
+  - 1 星显著：蓝色 1 格
+  - 2 星显著：橙色 2 格
+  - 3 星显著：紫色 3 格
 - 三类特殊规格使用同一套“实心点 + 彩色外圈 + 同色竖线”样式：
   - 全控制变量规格：红色
   - 无 `controls_test` 规格：橙色
@@ -412,7 +424,7 @@ uv run regression_monkey_plot.py \
 - 新增分析字段时，需要同步更新标准结果文件的读写逻辑和绘图元数据
 - 输出目录、文件名和 `sig.csv` 结构应尽量保持向后兼容
 
-如果希望更稳定地观察运行状态，可以注意终端中的进度输出。枚举规格时程序会打印总任务块数，并周期性输出进度百分比。
+如果希望更稳定地观察运行状态，可以注意终端中的进度输出。枚举规格时程序会打印总任务块数，并周期性输出进度百分比；绘图阶段会按总图片数显示完成进度，并在各固定效应类型都有样本后显示动态 ETA。
 
 ## 结果解释与注意事项
 

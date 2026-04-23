@@ -24,7 +24,7 @@ import pathlib
 import subprocess
 import sys
 from time import perf_counter
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import pandas as pd
 
@@ -299,6 +299,7 @@ def run_stata_engine(
     matrix_controls: list[str],
     spec_flags: dict[str, bool],
     run_output_dir: pathlib.Path,
+    on_item_ready: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
     _ = controls_test, controls_must
     df, var_map, fmt = _prepare_auto_dataframe(
@@ -331,6 +332,7 @@ def run_stata_engine(
             title_suffix = spec_def["help"].format(**fmt)
 
             print(f"[Stata] 运行规格：{spec_name}")
+            spec_t0 = perf_counter()
             _write_reghdfe_do(
                 do_path=do_path.resolve(),
                 log_path=log_path.resolve(),
@@ -392,13 +394,19 @@ def run_stata_engine(
                 clust_cols=clust_cols,
                 vce_label="robust" if spec_def["vce"] == "robust" else None,
             )
-            pair_items.append({
+            item = {
                 "records": records,
                 "sig_rows": sig_rows,
                 "results_path": results_path,
                 "meta_path": meta_path,
                 "output_path": output_path,
-            })
+                "fe_type": tuple(spec_def["fe_keys"]),
+                "elapsed_seconds": perf_counter() - spec_t0,
+            }
+            if on_item_ready is not None:
+                on_item_ready(item)
+                item["plotted"] = True
+            pair_items.append(item)
 
             if not args.keep_temp:
                 rm_common.safe_unlink(do_path)
@@ -445,6 +453,11 @@ def main() -> None:
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
 
     args = parser.parse_args(cli_args)
+    try:
+        args.y = rm._expand_space_separated_names(args.y)
+        args.x = rm._expand_space_separated_names(args.x)
+    except ValueError as exc:
+        parser.error(str(exc))
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
     controls_must = list(args.controls_must) if args.controls_must else []
     controls_test_flat, controls_test_slots = rm._normalize_controls_test(controls_test)

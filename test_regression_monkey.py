@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 import regression_monkey_common as rm_common
+import regression_monkey as rm_main
 import regression_monkey_py as rm_py
 
 
@@ -146,6 +147,29 @@ class TestSafeUnlink:
 
 
 # ─────────────────────────────────────────────────────────────
+# TestPlotProgress
+# ─────────────────────────────────────────────────────────────
+
+class TestPlotProgress:
+
+    def test_format_plot_progress(self) -> None:
+        line = rm_main._format_plot_progress(1, 4, width=8)
+        assert line == "[绘图进度] |##------| 1/4 ( 25.0%)"
+
+    def test_eta_waits_until_each_fe_type_has_sample(self) -> None:
+        estimator = rm_main._PlotProgressEstimator([
+            ("firm", "time"),
+            ("firm", "_ind_time"),
+            ("firm", "time"),
+        ])
+        first = estimator.update(("firm", "time"), 10.0, "a.png")
+        assert "ETA=等待各FE类型首张样本" in first
+
+        second = estimator.update(("firm", "_ind_time"), 20.0, "b.png")
+        assert "剩余≈10s" in second
+
+
+# ─────────────────────────────────────────────────────────────
 # TestNormalizeControls
 # ─────────────────────────────────────────────────────────────
 
@@ -162,6 +186,18 @@ class TestNormalizeControls:
         flat, slots = rm_py._normalize_controls_test(["a", ["b1", "b2"]])
         assert flat == ["a", "b1", "b2"]
         assert slots[1] == ("b1", "b2")
+
+    def test_space_separated_controls_expand_to_flat_slots(self) -> None:
+        """顶层空格分隔字符串会展开为多个普通变量槽位。"""
+        flat, slots = rm_py._normalize_controls_test(["a b c"])
+        assert flat == ["a", "b", "c"]
+        assert slots == [("a",), ("b",), ("c",)]
+
+    def test_space_separated_alternative_group_expands_inside_group(self) -> None:
+        """替代组内的空格分隔字符串会展开为同一个互斥组的成员。"""
+        flat, slots = rm_py._normalize_controls_test(["a", ["b1 b2", "b3"]])
+        assert flat == ["a", "b1", "b2", "b3"]
+        assert slots[1] == ("b1", "b2", "b3")
 
     def test_flat_controls_must(self) -> None:
         """must 平铺规范化正确。"""
@@ -185,6 +221,11 @@ class TestNormalizeControls:
         """空替代组抛 ValueError。"""
         with pytest.raises(ValueError, match="不能为空"):
             rm_py._normalize_controls_test([[]])
+
+    def test_space_separated_flat_name_helper(self) -> None:
+        """普通变量列表也支持单项内空格分隔。"""
+        names = rm_py._expand_space_separated_names(["y1 y2", "y3"])
+        assert names == ["y1", "y2", "y3"]
 
 
 # ─────────────────────────────────────────────────────────────
