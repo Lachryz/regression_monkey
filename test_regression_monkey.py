@@ -15,6 +15,7 @@ import pytest
 import regression_monkey_common as rm_common
 import regression_monkey as rm_main
 import regression_monkey_py as rm_py
+import regression_monkey_stata as rm_stata
 
 
 # ─────────────────────────────────────────────────────────────
@@ -162,10 +163,10 @@ class TestPlotProgress:
             ("firm", "_ind_time"),
             ("firm", "time"),
         ])
-        first = estimator.update(("firm", "time"), 10.0, "a.png")
+        first = estimator.update(("firm", "time"), 10.0)
         assert "ETA=等待各FE类型首张样本" in first
 
-        second = estimator.update(("firm", "_ind_time"), 20.0, "b.png")
+        second = estimator.update(("firm", "_ind_time"), 20.0)
         assert "剩余≈10s" in second
 
 
@@ -212,6 +213,39 @@ class TestNormalizeControls:
         assert slots[0] == ("m1", "m2")
         assert slots[1] == ("c",)
 
+    def test_duplicate_variable_across_control_lists_raises(self) -> None:
+        """同名变量不能同时出现在 must/test。"""
+        with pytest.raises(ValueError, match="变量不可同时出现在 controls_test 和 controls_must 中"):
+            rm_py._validate_control_lists_do_not_overlap(["a", "dup"], ["dup", "c"])
+
+    def test_grouping_variable_accepts_continuous_numeric(self, synthetic_df: pd.DataFrame) -> None:
+        """grouping_variable 支持连续数值变量。"""
+        df = synthetic_df.copy()
+        df["grouping"] = np.linspace(-1.0, 1.0, len(df))
+        assert rm_py._validate_grouping_variables(df, ["grouping"]) == ["grouping"]
+
+    def test_grouping_variable_requires_numeric_values(self, synthetic_df: pd.DataFrame) -> None:
+        """grouping_variable 必须是数值列。"""
+        df = synthetic_df.copy()
+        df["grouping"] = np.where(df.index % 2 == 0, "low", "high")
+        with pytest.raises(ValueError, match="需要是数值变量"):
+            rm_py._validate_grouping_variables(df, ["grouping"])
+
+    def test_grouping_specs_allow_same_variable_across_scopes(self, synthetic_df: pd.DataFrame) -> None:
+        """同一个连续变量可以按不同中位数口径重复绘图。"""
+        df = synthetic_df.copy()
+        df["grouping"] = np.linspace(-1.0, 1.0, len(df))
+        specs = rm_py._collect_grouping_variable_specs(
+            grouping_variable_by_ind_time=["grouping"],
+            grouping_variable_by_time=["grouping"],
+            grouping_variable_by_none=["grouping"],
+        )
+        assert rm_py._validate_grouping_variable_specs(df, specs) == [
+            ("by_ind_time", "grouping"),
+            ("by_time", "grouping"),
+            ("by_none", "grouping"),
+        ]
+
     def test_duplicate_variable_raises(self) -> None:
         """重复变量名抛 ValueError。"""
         with pytest.raises(ValueError, match="重复"):
@@ -226,6 +260,87 @@ class TestNormalizeControls:
         """普通变量列表也支持单项内空格分隔。"""
         names = rm_py._expand_space_separated_names(["y1 y2", "y3"])
         assert names == ["y1", "y2", "y3"]
+
+    def test_stata_grouping_do_uses_dynamic_esample_quantiles(self, tmp_path: pathlib.Path) -> None:
+        """分组 Stata do 文件应基于每个 all 回归的 e(sample) 动态二分连续变量。"""
+        do_path = tmp_path / "grouped.do"
+        log_path = tmp_path / "grouped.log"
+        data_path = tmp_path / "input.dta"
+        results_path = tmp_path / "results.dta"
+        rm_stata._write_reghdfe_do(
+            do_path=do_path,
+            log_path=log_path,
+            data_path=data_path,
+            results_dta=results_path,
+            y="outcome",
+            x="treatment",
+            controls_must=["ctrl_c"],
+            controls_must_slots=[("ctrl_c",)],
+            controls_test=["ctrl_a"],
+            controls_test_slots=[("ctrl_a",)],
+            spec_def=rm_py._SPEC_CATALOG[0],
+            var_map={"firm": "firm_id", "ind": "industry", "time": "year"},
+            grouping_variable="sue",
+        )
+        text = do_path.read_text(encoding="utf-8")
+        assert "gen byte `__rm_esample' = e(sample)" in text
+        assert "keep if `__rm_esample'" in text
+        assert "bysort industry year (firm_id): quantiles sue, gen(_temp) n(2) stable" in text
+        assert "gen byte b_sue = _temp - 1" in text
+        assert "capture reghdfe outcome treatment ctrl_c if b_sue == `__rm_g'" in text
+        assert "drop b_sue" in text
+
+    def test_stata_grouping_do_supports_time_and_none_scopes(self, tmp_path: pathlib.Path) -> None:
+        """分组 Stata do 文件支持 time 和 none 两种中位数构造口径。"""
+        kwargs = dict(
+            log_path=tmp_path / "grouped.log",
+            data_path=tmp_path / "input.dta",
+            results_dta=tmp_path / "results.dta",
+            y="outcome",
+            x="treatment",
+            controls_must=["ctrl_c"],
+            controls_must_slots=[("ctrl_c",)],
+            controls_test=["ctrl_a"],
+            controls_test_slots=[("ctrl_a",)],
+            spec_def=rm_py._SPEC_CATALOG[0],
+            var_map={"firm": "firm_id", "ind": "industry", "time": "year"},
+            grouping_variable="sue",
+        )
+        by_time_path = tmp_path / "by_time.do"
+        rm_stata._write_reghdfe_do(do_path=by_time_path, grouping_scope="by_time", **kwargs)
+        by_time_text = by_time_path.read_text(encoding="utf-8")
+        assert "bysort year (firm_id): quantiles sue, gen(_temp) n(2) stable" in by_time_text
+        assert '(\"sue[by_time]\")' in by_time_text
+
+        by_none_path = tmp_path / "by_none.do"
+        rm_stata._write_reghdfe_do(do_path=by_none_path, grouping_scope="by_none", **kwargs)
+        by_none_text = by_none_path.read_text(encoding="utf-8")
+        assert "sort firm_id" in by_none_text
+        assert "quantiles sue, gen(_temp) n(2) stable" in by_none_text
+        assert '(\"sue[by_none]\")' in by_none_text
+
+    def test_stata_interaction_grouping_do_uses_continuous_interaction(self, tmp_path: pathlib.Path) -> None:
+        """分组模式的交乘图应估计并抽取 c.x#c.z 的系数。"""
+        do_path = tmp_path / "interaction.do"
+        rm_stata._write_interaction_reghdfe_do(
+            do_path=do_path,
+            log_path=tmp_path / "interaction.log",
+            data_path=tmp_path / "input.dta",
+            results_dta=tmp_path / "results.dta",
+            y="outcome",
+            x="treatment",
+            z="sue",
+            controls_must=["ctrl_c"],
+            controls_must_slots=[("ctrl_c",)],
+            controls_test=["ctrl_a"],
+            controls_test_slots=[("ctrl_a",)],
+            spec_def=rm_py._SPEC_CATALOG[0],
+            var_map={"firm": "firm_id", "ind": "industry", "time": "year"},
+        )
+        text = do_path.read_text(encoding="utf-8")
+        assert "capture reghdfe outcome treatment ctrl_c c.treatment#c.sue, absorb(i.firm_id i.year) vce(cluster firm_id)" in text
+        assert "scalar __b = _b[c.treatment#c.sue]" in text
+        assert "scalar __se = _se[c.treatment#c.sue]" in text
 
 
 # ─────────────────────────────────────────────────────────────
@@ -257,6 +372,49 @@ class TestSpecCount:
         _, test_slots = rm_py._normalize_controls_test(["a", ["b1", "b2"]])
         _, must_slots = rm_py._normalize_controls_must([])
         assert rm_py._spec_count_from_slots(must_slots, test_slots) == 6
+
+    def test_plot_regression_count_message(self) -> None:
+        """每张图回归数提示格式稳定。"""
+        msg = rm_py._format_plot_regression_count(3000)
+        assert msg == "[本图回归数] 3,000 个回归"
+
+    def test_signed_p_sort_uses_coef_sign(self) -> None:
+        """order=p 完全按照带正负号的 p 值从大到小。"""
+        def rec(coef: float, p_value: float) -> rm_py.SpecRecord:
+            return {
+                "coef": coef,
+                "se": 1.0,
+                "t_value": coef,
+                "p_value": p_value,
+                "df_resid": 10,
+                "ci99_lo": coef - 1,
+                "ci99_hi": coef + 1,
+                "ci95_lo": coef - 1,
+                "ci95_hi": coef + 1,
+                "ci90_lo": coef - 1,
+                "ci90_hi": coef + 1,
+                "controls_test": set(),
+                "controls_all": set(),
+                "is_full": False,
+                "obs": 10,
+            }
+
+        records = [rec(1.0, 0.05), rec(-1.0, 0.10), rec(-2.0, 0.01), rec(2.0, 0.02)]
+        sorted_records = rm_py._sort_records_for_plot(records, sort_by_signed_p=True)
+        assert [(r["coef"], r["p_value"]) for r in sorted_records] == [
+            (1.0, 0.05),
+            (2.0, 0.02),
+            (-2.0, 0.01),
+            (-1.0, 0.10),
+        ]
+
+    def test_plot_order_normalization(self) -> None:
+        """order 参数和 --p 兼容别名解析正确。"""
+        assert rm_py._normalize_plot_order("coef") == "coef"
+        assert rm_py._normalize_plot_order("p") == "p"
+        assert rm_py._normalize_plot_order("coef", p_alias=True) == "p"
+        with pytest.raises(ValueError, match="order 只能是 coef 或 p"):
+            rm_py._normalize_plot_order("bad")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -338,6 +496,30 @@ class TestEndToEndPython:
         for orig, back in zip(records, loaded):
             assert abs(orig["coef"] - back["coef"]) < 1e-9
             assert abs(orig["se"] - back["se"]) < 1e-9
+
+    def test_sig_table_includes_p_t_and_sorts_by_p(
+        self, synthetic_df: pd.DataFrame, tmp_path: pathlib.Path
+    ) -> None:
+        """sig.csv 导出 p/t 列，并按 p_value 从小到大排序。"""
+        records = self._run(synthetic_df, ["ctrl_a", "ctrl_b"], ["ctrl_c"])
+        rows = rm_py._build_sig_rows(
+            records=records,
+            y="outcome",
+            x="treatment",
+            controls_must=["ctrl_c"],
+            controls_test=["ctrl_a", "ctrl_b"],
+            fe_cols=["firm_id", "year"],
+            clust_cols=["firm_id"],
+        )
+        out_csv = tmp_path / "sig.csv"
+        tbl = rm_py._export_sig_table(rows=rows, output_path=str(out_csv), n_specs=len(records), print_summary=False)
+
+        assert out_csv.exists()
+        assert tbl is not None
+        assert "p_value" in tbl.columns
+        assert "t_value" in tbl.columns
+        assert tbl["p_value"].tolist() == sorted(tbl["p_value"].tolist())
+        assert list(tbl.columns[:4]) == ["Star", "coef", "p_value", "t_value"]
 
     def test_toml_config_has_required_fields(self, test_toml_path: pathlib.Path) -> None:
         """regression_monkey_test.toml 包含所有必需配置字段。"""

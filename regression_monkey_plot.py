@@ -36,14 +36,25 @@ def plot_from_files(
     output_path: str | pathlib.Path | None = None,
     dpi: int | None = None,
     fig_width: float | None = None,
+    order: str | None = None,
+    sort_by_signed_p: bool | None = None,
+    verbose: bool = True,
 ) -> None:
     """Render one specification-curve PNG from standard handoff files."""
     results_file = pathlib.Path(results_path)
     meta_file = pathlib.Path(meta_path)
     meta = load_plot_meta(meta_file)
     records = rm_py.records_from_dataframe(pd.read_csv(results_file))
+    p_alias = bool(sort_by_signed_p) if sort_by_signed_p is not None else (
+        bool(meta.get("sort_by_signed_p", False)) if order is None else False
+    )
+    plot_order = rm_py._normalize_plot_order(
+        str(meta.get("order", "coef") if order is None else order),
+        p_alias=p_alias,
+    )
 
     out = pathlib.Path(output_path) if output_path is not None else pathlib.Path(meta["output_path"])
+    out.parent.mkdir(parents=True, exist_ok=True)
     rm_py._plot(
         records=records,
         y_name=str(meta["y"]),
@@ -57,6 +68,11 @@ def plot_from_files(
         output_path=str(out),
         title_suffix=meta.get("title_suffix"),
         elapsed_seconds_preplot=meta.get("elapsed_seconds_preplot"),
+        grouping_variable=meta.get("grouping_variable"),
+        grouped_plot_records=list(meta.get("grouped_plot_records", [])),
+        interaction_plot_records=list(meta.get("interaction_plot_records", [])),
+        sort_by_signed_p=rm_py._order_sorts_by_signed_p(plot_order),
+        verbose=verbose,
     )
 
 
@@ -70,6 +86,8 @@ def main() -> None:
     parser.add_argument("--output", metavar="PNG")
     parser.add_argument("--dpi", type=int)
     parser.add_argument("--fig-width", type=float)
+    parser.add_argument("--order", choices=["coef", "p"], help="绘图排序方式：coef 或 p")
+    parser.add_argument("--p", action="store_true", default=None, help="兼容别名；等价于 --order p")
     args = parser.parse_args()
 
     plot_from_files(
@@ -78,6 +96,8 @@ def main() -> None:
         output_path=args.output,
         dpi=args.dpi,
         fig_width=args.fig_width,
+        order=args.order,
+        sort_by_signed_p=args.p,
     )
 
 

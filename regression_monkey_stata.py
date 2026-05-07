@@ -34,6 +34,9 @@ import regression_monkey_common as rm_common
 import regression_monkey_py as rm
 
 
+GroupingSpec = tuple[str, str]
+
+
 def _stata_quote(text: str) -> str:
     return '"' + text.replace('"', '""') + '"'
 
@@ -43,6 +46,7 @@ def _ensure_stata_dta(
     src_path: pathlib.Path,
     output_dir: pathlib.Path,
     stem_suffix: str = "stata_input",
+    verbose: bool = True,
 ) -> pathlib.Path:
     """
     Always materialize the dataframe used by Python into a Stata-readable .dta.
@@ -57,7 +61,8 @@ def _ensure_stata_dta(
     """
     dta_path = output_dir / f"{src_path.stem}_{stem_suffix}.dta"
     df.to_stata(dta_path, write_index=False, version=118)
-    print(f"[Stata] 已生成临时 dta：{dta_path}")
+    if verbose:
+        print(f"[Stata] 已生成临时 dta：{dta_path}")
     return dta_path
 
 
@@ -151,6 +156,64 @@ def _spec_fe_labels(spec_def: dict[str, Any], var_map: dict[str, str]) -> list[s
     return labels
 
 
+def _safe_path_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "spec"
+
+
+def _dynamic_group_var_name(grouping_variable: str) -> str:
+    return f"b_{grouping_variable}"
+
+
+def _grouping_scope_suffix(scope: str) -> str:
+    if scope == "by_ind_time":
+        return "by_ind_time"
+    if scope == "by_time":
+        return "by_time"
+    if scope == "by_none":
+        return "by_none"
+    raise ValueError(f"unknown grouping scope: {scope}")
+
+
+def _grouping_display_name(grouping_variable: str, grouping_scope: str) -> str:
+    return f"{grouping_variable}[{_grouping_scope_suffix(grouping_scope)}]"
+
+
+def _grouping_path_part(grouping_variable: str, grouping_scope: str) -> str:
+    return f"{_safe_path_part(grouping_variable)}_{_grouping_scope_suffix(grouping_scope)}"
+
+
+def _grouping_quantiles_line(grouping_variable: str, grouping_scope: str, var_map: dict[str, str]) -> list[str]:
+    if grouping_scope == "by_ind_time":
+        return [
+            f"    bysort {var_map['ind']} {var_map['time']} ({var_map['firm']}): quantiles {grouping_variable}, gen(_temp) n(2) stable",
+        ]
+    if grouping_scope == "by_time":
+        return [
+            f"    bysort {var_map['time']} ({var_map['firm']}): quantiles {grouping_variable}, gen(_temp) n(2) stable",
+        ]
+    if grouping_scope == "by_none":
+        return [
+            f"    sort {var_map['firm']}",
+            f"    quantiles {grouping_variable}, gen(_temp) n(2) stable",
+        ]
+    raise ValueError(f"unknown grouping scope: {grouping_scope}")
+
+
+def _control_spec_count(
+    controls_must_slots: list[rm.ControlSlot],
+    controls_test_slots: list[rm.ControlSlot],
+) -> int:
+    return rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
+
+
+def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
+    output_dir = run_output_dir / _safe_path_part(group_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / filename
+
+
 def _write_reghdfe_do(
     do_path: pathlib.Path,
     log_path: pathlib.Path,
@@ -164,6 +227,8 @@ def _write_reghdfe_do(
     controls_test_slots: list[rm.ControlSlot],
     spec_def: dict[str, Any],
     var_map: dict[str, str],
+    grouping_variable: str | None = None,
+    grouping_scope: str = "by_ind_time",
 ) -> None:
     absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
     subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
@@ -177,10 +242,20 @@ def _write_reghdfe_do(
         '    di as error "reghdfe not installed in this Stata environment."',
         "    exit 199",
         "}",
+    ]
+    if grouping_variable is not None:
+        lines.extend([
+            "capture which quantiles",
+            "if _rc {",
+            '    di as error "quantiles not installed in this Stata environment."',
+            "    exit 199",
+            "}",
+        ])
+    lines.extend([
         f"use {_stata_quote(str(data_path))}, clear",
         f"tempname posth",
-        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
-    ]
+        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
+    ])
 
     for bits, chosen_must, chosen_test, _is_full in subsets:
         rhs_terms = [x]
@@ -192,20 +267,110 @@ def _write_reghdfe_do(
         chosen_must_txt = "|".join(chosen_must)
         chosen_test_txt = "|".join(chosen_test)
         spec_name = spec_def["name"]
+        if grouping_variable is None:
+            lines.extend([
+                f"* Run each spec on the full dataset currently in memory; do not pre-filter",
+                f"* by optional controls_test missingness outside reghdfe. Let e(sample)/e(N)",
+                f"* be determined by this exact RHS + absorb() combination.",
+                f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
+                "if _rc == 0 {",
+                f"    scalar __b = _b[{x}]",
+                f"    scalar __se = _se[{x}]",
+                "    scalar __N = e(N)",
+                "    scalar __df = e(df_r)",
+                f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df)',
+                "}",
+            ])
+        else:
+            b_group = _dynamic_group_var_name(grouping_variable)
+            group_name_literal = _stata_quote(_grouping_display_name(grouping_variable, grouping_scope))
+            quantiles_lines = _grouping_quantiles_line(grouping_variable, grouping_scope, var_map)
+            lines.extend([
+                f"* First run the all-sample spec to capture its exact e(sample).",
+                f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
+                "if _rc == 0 {",
+                "    tempvar __rm_esample",
+                "    gen byte `__rm_esample' = e(sample)",
+                "    preserve",
+                "    keep if `__rm_esample'",
+                f"    capture drop {b_group}",
+                "    capture drop _temp",
+                *quantiles_lines,
+                f"    gen byte {b_group} = _temp - 1",
+                "    drop _temp",
+                "    forvalues __rm_g = 0/1 {",
+                f"        capture reghdfe {y} {rhs} if {b_group} == `__rm_g', absorb({absorb_expr}) {vce}",
+                "        if _rc == 0 {",
+                f"            scalar __b = _b[{x}]",
+                f"            scalar __se = _se[{x}]",
+                "            scalar __N = e(N)",
+                "            scalar __df = e(df_r)",
+                f'            post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ({group_name_literal}) (`__rm_g\') (__b) (__se) (__N) (__df)',
+                "        }",
+                "    }",
+                f"    drop {b_group}",
+                "    restore",
+                "}",
+            ])
+
+    lines.extend([
+        "postclose `posth'",
+        "exit 0",
+    ])
+    do_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_interaction_reghdfe_do(
+    do_path: pathlib.Path,
+    log_path: pathlib.Path,
+    data_path: pathlib.Path,
+    results_dta: pathlib.Path,
+    y: str,
+    x: str,
+    z: str,
+    controls_must: list[str],
+    controls_must_slots: list[rm.ControlSlot],
+    controls_test: list[str],
+    controls_test_slots: list[rm.ControlSlot],
+    spec_def: dict[str, Any],
+    var_map: dict[str, str],
+) -> None:
+    absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
+    subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
+    _ = log_path, controls_must, controls_test
+    interaction_term = f"c.{x}#c.{z}"
+    lines = [
+        "version 18.0",
+        "clear all",
+        "set more off",
+        "capture which reghdfe",
+        "if _rc {",
+        '    di as error "reghdfe not installed in this Stata environment."',
+        "    exit 199",
+        "}",
+        f"use {_stata_quote(str(data_path))}, clear",
+        "tempname posth",
+        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
+    ]
+    for bits, chosen_must, chosen_test, _is_full in subsets:
+        rhs_terms = [x]
+        rhs_terms.extend(chosen_must)
+        rhs_terms.extend(chosen_test)
+        rhs_terms.append(interaction_term)
+        rhs = " ".join(rhs_terms)
+        chosen_must_txt = "|".join(chosen_must)
+        chosen_test_txt = "|".join(chosen_test)
+        spec_name = spec_def["name"]
         lines.extend([
-            f"* Run each spec on the full dataset currently in memory; do not pre-filter",
-            f"* by optional controls_test missingness outside reghdfe. Let e(sample)/e(N)",
-            f"* be determined by this exact RHS + absorb() combination.",
             f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
             "if _rc == 0 {",
-            f"    scalar __b = _b[{x}]",
-            f"    scalar __se = _se[{x}]",
+            f"    scalar __b = _b[{interaction_term}]",
+            f"    scalar __se = _se[{interaction_term}]",
             "    scalar __N = e(N)",
             "    scalar __df = e(df_r)",
-            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) (__b) (__se) (__N) (__df)',
+            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df)',
             "}",
         ])
-
     lines.extend([
         "postclose `posth'",
         "exit 0",
@@ -218,6 +383,7 @@ def _run_stata_do(
     do_path: pathlib.Path,
     log_path: pathlib.Path,
     cwd: pathlib.Path,
+    verbose: bool = True,
 ) -> None:
     cmd = [stata_path, "-b", "do", do_path.name]
     try:
@@ -227,7 +393,8 @@ def _run_stata_do(
             f"Stata executable not found: {stata_path}\n"
             "Use --stata-path or set stata_path in the TOML config."
         ) from exc
-    print(f"[Stata] PID={proc.pid}  do={do_path.name}  log={log_path.name}")
+    if verbose:
+        print(f"[Stata] PID={proc.pid}  do={do_path.name}  log={log_path.name}")
     try:
         returncode = proc.wait()
     except KeyboardInterrupt as exc:
@@ -286,6 +453,25 @@ def _ensure_stata_result_exists(
     )
 
 
+def _raise_empty_stata_records(
+    *,
+    spec_display: str,
+    results_dta: pathlib.Path,
+    do_path: pathlib.Path,
+    log_path: pathlib.Path,
+) -> None:
+    log_tail = _tail_text(log_path)
+    raise RuntimeError(
+        "Stata returned no valid regression results.\n"
+        f"Spec: {spec_display}\n"
+        f"Result file: {results_dta.resolve()}\n"
+        f"Do file: {do_path.resolve()}\n"
+        f"Log file: {log_path.resolve()}\n"
+        "Stata log tail:\n"
+        f"{log_tail}"
+    )
+
+
 def _records_from_stata_dta(
     dta_path: pathlib.Path,
     controls_must_slots: list[rm.ControlSlot],
@@ -328,6 +514,47 @@ def _records_from_stata_dta(
     return records
 
 
+def _grouped_records_from_stata_dta(
+    dta_path: pathlib.Path,
+    controls_must_slots: list[rm.ControlSlot],
+    controls_test_slots: list[rm.ControlSlot],
+) -> list[rm.GroupedPlotRecord]:
+    df_res = cast(pd.DataFrame, pd.read_stata(dta_path))
+    grouped_records: list[rm.GroupedPlotRecord] = []
+    for _, row in df_res.iterrows():
+        group_name = str(row.get("grouping_variable", "") or "")
+        group_value_raw = row.get("group_value")
+        if not group_name or pd.isna(group_value_raw):
+            continue
+        coef = float(row["coef"])
+        se = float(row["se"])
+        obs = int(round(float(row["obs"])))
+        df_resid = max(1, int(round(float(row["df_resid"]))))
+        chosen_must = [c for c in str(row["chosen_must_controls"]).split("|") if c]
+        chosen_test = [c for c in str(row["chosen_test_controls"]).split("|") if c]
+        chosen_all = sorted(set(chosen_must) | set(chosen_test))
+        rem_bits, _, _ = rm._decode_required_choice(int(row["bits"]), controls_must_slots)
+        _, _, _is_full = rm._decode_optional_choice(rem_bits, controls_test_slots)
+        t_value = coef / se
+        p_value = rm._p_value_from_t(abs(t_value), df_resid)
+        _crit99, crit95, _crit90 = rm._crit_values(df_resid)
+        grouped_records.append({
+            "grouping_variable": group_name,
+            "group_value": int(round(float(group_value_raw))),
+            "coef": coef,
+            "p_value": p_value,
+            "ci99_lo": coef - _crit99 * se,
+            "ci99_hi": coef + _crit99 * se,
+            "ci95_lo": coef - crit95 * se,
+            "ci95_hi": coef + crit95 * se,
+            "ci90_lo": coef - _crit90 * se,
+            "ci90_hi": coef + _crit90 * se,
+            "obs": obs,
+            "controls_all": chosen_all,
+        })
+    return grouped_records
+
+
 def run_stata_engine(
     *,
     df: pd.DataFrame,
@@ -339,6 +566,7 @@ def run_stata_engine(
     controls_test_slots: list[rm.ControlSlot],
     controls_must_flat: list[str],
     controls_must_slots: list[rm.ControlSlot],
+    grouping_variables: list[GroupingSpec],
     matrix_controls: list[str],
     spec_flags: dict[str, bool],
     run_output_dir: pathlib.Path,
@@ -353,28 +581,32 @@ def run_stata_engine(
         time_fe=args.time_fe,
         region_fe=args.region_fe,
     )
-    dta_path = _ensure_stata_dta(df, data_path, run_output_dir)
+    dta_path = _ensure_stata_dta(df, data_path, run_output_dir, verbose=False)
     outputs: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     for y_var, x_var in itertools.product(args.y, args.x):
         pair_items: list[dict[str, Any]] = []
         for spec_def in rm._SPEC_CATALOG:
             spec_name = spec_def["name"]
+            spec_display = rm._format_spec_display(spec_def, fmt)
             if not spec_flags.get(spec_name, False):
                 continue
             if spec_def["needs_region"] and args.region_fe is None:
-                print(f"[跳过] {spec_name}：需要 Region_FE 但未指定")
+                print(f"[跳过] {spec_display}：需要 Region_FE 但未指定")
                 continue
 
             do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.do"
             log_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.log"
             dta_result_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_stata_results.dta"
             results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_results.csv"
-            meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_plot_meta.json"
-            output_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}.png"
             title_suffix = spec_def["help"].format(**fmt)
+            base_regression_count = _control_spec_count(controls_must_slots, controls_test_slots)
 
-            print(f"[Stata] 运行规格：{spec_name}")
+            print(f"[Stata] 运行规格：{spec_display}")
+            if grouping_variables:
+                print(f"[Stata] 预先运行 all 样本规格：{base_regression_count:,} 个回归")
+            else:
+                print(rm._format_plot_regression_count(base_regression_count))
             spec_t0 = perf_counter()
             _write_reghdfe_do(
                 do_path=do_path.resolve(),
@@ -389,8 +621,9 @@ def run_stata_engine(
                 controls_test_slots=controls_test_slots,
                 spec_def=spec_def,
                 var_map=var_map,
+                grouping_variable=None,
             )
-            _run_stata_do(args.stata_path, do_path, log_path, run_output_dir)
+            _run_stata_do(args.stata_path, do_path, log_path, run_output_dir, verbose=False)
             _ensure_stata_result_exists(
                 results_dta=dta_result_path,
                 do_path=do_path,
@@ -402,32 +635,16 @@ def run_stata_engine(
                 controls_test_slots=controls_test_slots,
             )
             if not records:
-                print(f"[Stata] {spec_name} 未返回有效回归结果")
-                print(f"[Stata] 已保留调试文件：{do_path.name}, {log_path.name}, {dta_result_path.name}")
-                continue
+                _raise_empty_stata_records(
+                    spec_display=spec_display,
+                    results_dta=dta_result_path,
+                    do_path=do_path,
+                    log_path=log_path,
+                )
 
-            rm.write_analysis_artifacts(
-                records=records,
-                results_path=results_path,
-                meta_path=meta_path,
-                meta={
-                    "engine": "stata",
-                    "spec_name": spec_name,
-                    "y": y_var,
-                    "x": x_var,
-                    "controls_test_flat": controls_test_flat,
-                    "controls_must_flat": controls_must_flat,
-                    "matrix_controls": matrix_controls,
-                    "show_special_markers": True,
-                    "fig_width": args.fig_width,
-                    "dpi": args.dpi,
-                    "title_suffix": title_suffix,
-                    "output_path": str(output_path),
-                },
-            )
             fe_cols = _spec_fe_labels(spec_def, var_map)
             clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
-            sig_rows = rm._build_sig_rows(
+            base_sig_rows = rm._build_sig_rows(
                 records=records,
                 y=y_var,
                 x=x_var,
@@ -437,19 +654,199 @@ def run_stata_engine(
                 clust_cols=clust_cols,
                 vce_label="robust" if spec_def["vce"] == "robust" else None,
             )
-            item = {
-                "records": records,
-                "sig_rows": sig_rows,
-                "results_path": results_path,
-                "meta_path": meta_path,
-                "output_path": output_path,
-                "fe_type": tuple(spec_def["fe_keys"]),
-                "elapsed_seconds": perf_counter() - spec_t0,
-            }
-            if on_item_ready is not None:
-                on_item_ready(item)
-                item["plotted"] = True
-            pair_items.append(item)
+            if grouping_variables:
+                for grouping_idx, (grouping_scope, grouping_variable) in enumerate(grouping_variables):
+                    grouping_path_part = _grouping_path_part(grouping_variable, grouping_scope)
+                    grouping_display_name = _grouping_display_name(grouping_variable, grouping_scope)
+                    grouped_do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_grouped.do"
+                    grouped_log_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_grouped.log"
+                    grouped_dta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_grouped_stata_results.dta"
+                    interaction_do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_interaction.do"
+                    interaction_log_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_interaction.log"
+                    interaction_dta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_interaction_stata_results.dta"
+                    grouped_results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_results.csv"
+                    grouped_meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_plot_meta.json"
+                    grouped_output_path = _plot_output_path(
+                        run_output_dir,
+                        str(spec_def["tag"]),
+                        f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}.png",
+                    )
+
+                    print(rm._format_plot_regression_count(base_regression_count * 4))
+                    _write_reghdfe_do(
+                        do_path=grouped_do_path.resolve(),
+                        log_path=grouped_log_path.resolve(),
+                        data_path=dta_path.resolve(),
+                        results_dta=grouped_dta_path.resolve(),
+                        y=y_var,
+                        x=x_var,
+                        controls_must=controls_must_flat,
+                        controls_must_slots=controls_must_slots,
+                        controls_test=controls_test_flat,
+                        controls_test_slots=controls_test_slots,
+                        spec_def=spec_def,
+                        var_map=var_map,
+                        grouping_variable=grouping_variable,
+                        grouping_scope=grouping_scope,
+                    )
+                    _run_stata_do(args.stata_path, grouped_do_path, grouped_log_path, run_output_dir, verbose=False)
+                    _ensure_stata_result_exists(
+                        results_dta=grouped_dta_path,
+                        do_path=grouped_do_path,
+                        log_path=grouped_log_path,
+                    )
+                    grouped_plot_records = _grouped_records_from_stata_dta(
+                        grouped_dta_path,
+                        controls_must_slots=controls_must_slots,
+                        controls_test_slots=controls_test_slots,
+                    )
+
+                    _write_interaction_reghdfe_do(
+                        do_path=interaction_do_path.resolve(),
+                        log_path=interaction_log_path.resolve(),
+                        data_path=dta_path.resolve(),
+                        results_dta=interaction_dta_path.resolve(),
+                        y=y_var,
+                        x=x_var,
+                        z=grouping_variable,
+                        controls_must=controls_must_flat,
+                        controls_must_slots=controls_must_slots,
+                        controls_test=controls_test_flat,
+                        controls_test_slots=controls_test_slots,
+                        spec_def=spec_def,
+                        var_map=var_map,
+                    )
+                    _run_stata_do(args.stata_path, interaction_do_path, interaction_log_path, run_output_dir, verbose=False)
+                    _ensure_stata_result_exists(
+                        results_dta=interaction_dta_path,
+                        do_path=interaction_do_path,
+                        log_path=interaction_log_path,
+                    )
+                    interaction_records = _records_from_stata_dta(
+                        interaction_dta_path,
+                        controls_must_slots=controls_must_slots,
+                        controls_test_slots=controls_test_slots,
+                    )
+                    if not interaction_records:
+                        _raise_empty_stata_records(
+                            spec_display=f"{spec_display} interaction {x_var}#{grouping_variable}",
+                            results_dta=interaction_dta_path,
+                            do_path=interaction_do_path,
+                            log_path=interaction_log_path,
+                        )
+                    rm.write_analysis_artifacts(
+                        records=records,
+                        results_path=grouped_results_path,
+                        meta_path=grouped_meta_path,
+                        meta={
+                            "engine": "stata",
+                            "spec_name": spec_name,
+                            "y": y_var,
+                            "x": x_var,
+                            "controls_test_flat": controls_test_flat,
+                            "controls_must_flat": controls_must_flat,
+                            "matrix_controls": matrix_controls,
+                            "show_special_markers": True,
+                            "fig_width": args.fig_width,
+                            "dpi": args.dpi,
+                            "order": args.order,
+                            "sort_by_signed_p": rm._order_sorts_by_signed_p(args.order),
+                            "title_suffix": f"{title_suffix} - grouped + interaction c.{x_var}#c.{grouping_variable}",
+                            "output_path": str(grouped_output_path),
+                            "grouping_variable": grouping_display_name,
+                            "grouped_plot_records": grouped_plot_records,
+                            "interaction_plot_records": interaction_records,
+                        },
+                        verbose=False,
+                    )
+                    interaction_sig_rows = rm._build_sig_rows(
+                        records=interaction_records,
+                        y=y_var,
+                        x=f"c.{x_var}#c.{grouping_variable}",
+                        controls_must=controls_must_flat,
+                        controls_test=controls_test_flat,
+                        fe_cols=fe_cols,
+                        clust_cols=clust_cols,
+                        vce_label="robust" if spec_def["vce"] == "robust" else None,
+                    )
+                    grouped_sig_rows = rm._build_sig_rows(
+                        records=records,
+                        y=y_var,
+                        x=x_var,
+                        controls_must=controls_must_flat,
+                        controls_test=controls_test_flat,
+                        fe_cols=fe_cols,
+                        clust_cols=clust_cols,
+                        vce_label="robust" if spec_def["vce"] == "robust" else None,
+                        grouping_variable=grouping_display_name,
+                        grouped_records=grouped_plot_records,
+                    )
+                    item = {
+                        "records": records,
+                        "sig_rows": grouped_sig_rows + interaction_sig_rows,
+                        "summary_sig_rows": base_sig_rows,
+                        "counts_as_base_spec": grouping_idx == 0,
+                        "results_path": grouped_results_path,
+                        "meta_path": grouped_meta_path,
+                        "output_path": grouped_output_path,
+                        "fe_type": tuple(spec_def["fe_keys"]),
+                        "elapsed_seconds": perf_counter() - spec_t0,
+                    }
+                    if on_item_ready is not None:
+                        on_item_ready(item)
+                        item["plotted"] = True
+                    pair_items.append(item)
+                    if not args.keep_temp:
+                        rm_common.safe_unlink(grouped_do_path)
+                        rm_common.safe_unlink(grouped_log_path)
+                        rm_common.safe_unlink(grouped_dta_path)
+                        rm_common.safe_unlink(interaction_do_path)
+                        rm_common.safe_unlink(interaction_log_path)
+                        rm_common.safe_unlink(interaction_dta_path)
+            else:
+                meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_plot_meta.json"
+                output_path = _plot_output_path(
+                    run_output_dir,
+                    str(spec_def["tag"]),
+                    f"{y_var}_{x_var}_{spec_def['tag']}.png",
+                )
+                rm.write_analysis_artifacts(
+                    records=records,
+                    results_path=results_path,
+                    meta_path=meta_path,
+                    meta={
+                        "engine": "stata",
+                        "spec_name": spec_name,
+                        "y": y_var,
+                        "x": x_var,
+                        "controls_test_flat": controls_test_flat,
+                        "controls_must_flat": controls_must_flat,
+                        "matrix_controls": matrix_controls,
+                        "show_special_markers": True,
+                        "fig_width": args.fig_width,
+                        "dpi": args.dpi,
+                        "order": args.order,
+                        "sort_by_signed_p": rm._order_sorts_by_signed_p(args.order),
+                        "title_suffix": title_suffix,
+                        "output_path": str(output_path),
+                    },
+                    verbose=False,
+                )
+                item = {
+                    "records": records,
+                    "sig_rows": base_sig_rows,
+                    "summary_sig_rows": base_sig_rows,
+                    "counts_as_base_spec": True,
+                    "results_path": results_path,
+                    "meta_path": meta_path,
+                    "output_path": output_path,
+                    "fe_type": tuple(spec_def["fe_keys"]),
+                    "elapsed_seconds": perf_counter() - spec_t0,
+                }
+                if on_item_ready is not None:
+                    on_item_ready(item)
+                    item["plotted"] = True
+                pair_items.append(item)
 
             if not args.keep_temp:
                 rm_common.safe_unlink(do_path)
@@ -474,6 +871,10 @@ def main() -> None:
     parser.add_argument("--controls", metavar="VAR", nargs="+", help="compat alias for --controls-test")
     parser.add_argument("--controls-test", dest="controls_test", metavar="VAR", nargs="+")
     parser.add_argument("--controls-must", dest="controls_must", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable", dest="grouping_variable", metavar="VAR", nargs="+", help="compat alias for --grouping-variable-by-ind-time")
+    parser.add_argument("--grouping-variable-by-ind-time", dest="grouping_variable_by_ind_time", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable-by-time", dest="grouping_variable_by_time", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable-by-none", dest="grouping_variable_by_none", metavar="VAR", nargs="+")
     parser.add_argument("--Firm-FE", dest="firm_fe", default="code", metavar="COL")
     parser.add_argument("--Ind-FE", dest="ind_fe", default="ind", metavar="COL")
     parser.add_argument("--Time-FE", dest="time_fe", default="year", metavar="COL")
@@ -481,6 +882,8 @@ def main() -> None:
     parser.add_argument("--output", default="outputs", metavar="DIR")
     parser.add_argument("--dpi", default=150, type=int)
     parser.add_argument("--fig-width", default=14.0, type=float, metavar="INCHES")
+    parser.add_argument("--order", choices=["coef", "p"], default="coef", help="绘图排序方式：coef 或 p")
+    parser.add_argument("--p", action="store_true", help="兼容别名；等价于 --order p")
     parser.add_argument("--stata-path", default="stata-mp", metavar="EXE")
     parser.add_argument("--keep-temp", action="store_true", help="保留 .do / .log / 中间 Stata 结果文件")
     for spec_name in rm._ALL_SPEC_NAMES:
@@ -489,7 +892,9 @@ def main() -> None:
     if cfg:
         allowed = {
             "data", "y", "x", "controls", "controls_test", "controls_must",
-            "output", "dpi", "fig_width", "firm_fe", "ind_fe", "time_fe",
+            "grouping_variable", "grouping_variable_by_ind_time",
+            "grouping_variable_by_time", "grouping_variable_by_none",
+            "output", "dpi", "fig_width", "order", "p", "firm_fe", "ind_fe", "time_fe",
             "region_fe", "stata_path", "keep_temp",
         } | set(rm._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
@@ -497,14 +902,23 @@ def main() -> None:
 
     args = parser.parse_args(cli_args)
     try:
+        args.order = rm._normalize_plot_order(args.order, p_alias=bool(args.p))
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
         args.y = rm._expand_space_separated_names(args.y)
         args.x = rm._expand_space_separated_names(args.x)
+        args.grouping_variable = rm._expand_space_separated_names(args.grouping_variable)
+        args.grouping_variable_by_ind_time = rm._expand_space_separated_names(args.grouping_variable_by_ind_time)
+        args.grouping_variable_by_time = rm._expand_space_separated_names(args.grouping_variable_by_time)
+        args.grouping_variable_by_none = rm._expand_space_separated_names(args.grouping_variable_by_none)
     except ValueError as exc:
         parser.error(str(exc))
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
     controls_must = list(args.controls_must) if args.controls_must else []
     controls_test_flat, controls_test_slots = rm._normalize_controls_test(controls_test)
     controls_must_flat, controls_must_slots = rm._normalize_controls_must(controls_must)
+    rm._validate_control_lists_do_not_overlap(controls_test_flat, controls_must_flat)
     matrix_controls = rm._varying_must_controls(controls_must_slots) + controls_test_flat
     if not args.data or not args.y or not args.x:
         parser.error("必须提供 data / y / x（可通过 TOML 或 CLI 指定）")
@@ -516,6 +930,16 @@ def main() -> None:
     print(f"读取数据：{data_path}")
     df = rm_common.load_dataframe(data_path)
     print(f"数据读取完成：{len(df):,} 行 × {len(df.columns)} 列")
+    try:
+        grouping_specs = rm._collect_grouping_variable_specs(
+            grouping_variable=list(args.grouping_variable or []),
+            grouping_variable_by_ind_time=list(args.grouping_variable_by_ind_time or []),
+            grouping_variable_by_time=list(args.grouping_variable_by_time or []),
+            grouping_variable_by_none=list(args.grouping_variable_by_none or []),
+        )
+        grouping_specs = rm._validate_grouping_variable_specs(df, grouping_specs)
+    except ValueError as exc:
+        parser.error(str(exc))
     output_root = pathlib.Path(args.output).expanduser().resolve()
     if output_root.suffix:
         output_root = output_root.parent
@@ -533,6 +957,7 @@ def main() -> None:
         controls_test_slots=controls_test_slots,
         controls_must_flat=controls_must_flat,
         controls_must_slots=controls_must_slots,
+        grouping_variables=grouping_specs,
         matrix_controls=matrix_controls,
         spec_flags=spec_flags,
         run_output_dir=run_output_dir,

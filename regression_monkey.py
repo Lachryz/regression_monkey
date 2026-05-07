@@ -44,6 +44,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--controls", metavar="VAR", nargs="+", help="兼容旧配置；等价于 --controls-test")
     parser.add_argument("--controls-test", dest="controls_test", metavar="VAR", nargs="+")
     parser.add_argument("--controls-must", dest="controls_must", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable", dest="grouping_variable", metavar="VAR", nargs="+", help="兼容别名；等价于 --grouping-variable-by-ind-time")
+    parser.add_argument("--grouping-variable-by-ind-time", dest="grouping_variable_by_ind_time", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable-by-time", dest="grouping_variable_by_time", metavar="VAR", nargs="+")
+    parser.add_argument("--grouping-variable-by-none", dest="grouping_variable_by_none", metavar="VAR", nargs="+")
     parser.add_argument("--Firm-FE", dest="firm_fe", default="code", metavar="COL")
     parser.add_argument("--Ind-FE", dest="ind_fe", default="ind", metavar="COL")
     parser.add_argument("--Time-FE", dest="time_fe", default="year", metavar="COL")
@@ -55,6 +59,8 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dpi", default=150, type=int)
     parser.add_argument("--fig-width", default=14.0, type=float, metavar="INCHES")
     parser.add_argument("--n-jobs", default=0, type=int, metavar="N")
+    parser.add_argument("--order", choices=["coef", "p"], default="coef", help="绘图排序方式：coef 或 p")
+    parser.add_argument("--p", action="store_true", help="兼容别名；等价于 --order p")
     parser.add_argument("--stata-path", default="stata-mp", metavar="EXE")
     parser.add_argument("--keep-temp", action="store_true")
     for spec_name in rm_py._ALL_SPEC_NAMES:
@@ -90,6 +96,24 @@ def _drawable_auto_specs(spec_flags: dict[str, bool], region_fe: str | None) -> 
     ]
 
 
+def _safe_path_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "spec"
+
+
+def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
+    output_dir = run_output_dir / _safe_path_part(group_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / filename
+
+
+def _manual_plot_group(fe_cols: list[str], clust_cols: list[str]) -> str:
+    fe_part = "_".join(_safe_path_part(col) for col in fe_cols)
+    clust_part = "_".join(_safe_path_part(col) for col in clust_cols) if clust_cols else "robust"
+    return f"manual_ab_{fe_part}_cl_{clust_part}"
+
+
 def _write_and_plot(
     *,
     records: list[rm_py.SpecRecord],
@@ -97,14 +121,21 @@ def _write_and_plot(
     meta_path: pathlib.Path,
     output_path: pathlib.Path,
     meta: dict[str, Any],
+    verbose: bool = True,
 ) -> None:
     rm_py.write_analysis_artifacts(
         records=records,
         results_path=results_path,
         meta_path=meta_path,
         meta={**meta, "output_path": str(output_path)},
+        verbose=verbose,
     )
-    rm_plot.plot_from_files(results_path=results_path, meta_path=meta_path, output_path=output_path)
+    rm_plot.plot_from_files(
+        results_path=results_path,
+        meta_path=meta_path,
+        output_path=output_path,
+        verbose=verbose,
+    )
 
 
 def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path, keep_temp: bool) -> None:
@@ -146,7 +177,7 @@ class _PlotProgressEstimator:
         self.remaining = Counter(planned_fe_types)
         self.samples: dict[tuple[str, ...], list[float]] = defaultdict(list)
 
-    def update(self, fe_type: tuple[str, ...], elapsed_seconds: float, output_name: str) -> str:
+    def update(self, fe_type: tuple[str, ...], elapsed_seconds: float) -> str:
         self.done += 1
         if self.remaining[fe_type] > 0:
             self.remaining[fe_type] -= 1
@@ -170,7 +201,6 @@ class _PlotProgressEstimator:
                 finish_at = datetime.now() + timedelta(seconds=eta)
                 parts.append(f"剩余≈{_format_duration(eta)}")
                 parts.append(f"预计完成≈{finish_at:%H:%M:%S}")
-        parts.append(output_name)
         return "  ".join(parts)
 
     def estimate_remaining_seconds(self) -> float | None:
@@ -245,7 +275,11 @@ def _run_python_pair(
                 continue
             _, records, _fig = auto_results[0]
             spec_def = next(s for s in rm_py._SPEC_CATALOG if s["name"] == spec_name)
-            out_png = run_output_dir / f"{pair_stem}_{spec_def['tag']}.png"
+            out_png = _plot_output_path(
+                run_output_dir,
+                str(spec_def["tag"]),
+                f"{pair_stem}_{spec_def['tag']}.png",
+            )
             results_path = run_output_dir / f"{pair_stem}_{spec_def['tag']}_results.csv"
             meta_path = run_output_dir / f"{pair_stem}_{spec_def['tag']}_plot_meta.json"
             _write_and_plot(
@@ -264,6 +298,8 @@ def _run_python_pair(
                     "show_special_markers": True,
                     "fig_width": args.fig_width,
                     "dpi": args.dpi,
+                    "order": args.order,
+                    "sort_by_signed_p": rm_py._order_sorts_by_signed_p(args.order),
                     "title_suffix": spec_def["help"].format(**fmt),
                 },
             )
@@ -303,7 +339,11 @@ def _run_python_pair(
         export_sig_table=False,
         render_plot=False,
     )
-    out_png = run_output_dir / f"{pair_stem}.png"
+    out_png = _plot_output_path(
+        run_output_dir,
+        _manual_plot_group(list(args.fe), clust_cols),
+        f"{pair_stem}.png",
+    )
     results_path = run_output_dir / f"{pair_stem}_results.csv"
     meta_path = run_output_dir / f"{pair_stem}_plot_meta.json"
     _write_and_plot(
@@ -322,6 +362,8 @@ def _run_python_pair(
             "show_special_markers": True,
             "fig_width": args.fig_width,
             "dpi": args.dpi,
+            "order": args.order,
+            "sort_by_signed_p": rm_py._order_sorts_by_signed_p(args.order),
             "title_suffix": f"manual FE = {', '.join(args.fe)}",
         },
     )
@@ -352,7 +394,9 @@ def main() -> None:
     if cfg:
         allowed = {
             "engine", "data", "y", "x", "controls", "controls_test", "controls_must",
-            "output", "dpi", "fig_width", "n_jobs", "firm_fe", "ind_fe", "time_fe",
+            "grouping_variable", "grouping_variable_by_ind_time",
+            "grouping_variable_by_time", "grouping_variable_by_none",
+            "output", "dpi", "fig_width", "n_jobs", "order", "p", "firm_fe", "ind_fe", "time_fe",
             "region_fe", "fe", "clust", "gen_clust2", "stata_path", "keep_temp",
         } | set(rm_py._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
@@ -360,10 +404,18 @@ def main() -> None:
 
     args = parser.parse_args(cli_args)
     try:
+        args.order = rm_py._normalize_plot_order(args.order, p_alias=bool(args.p))
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
         args.y = rm_py._expand_space_separated_names(args.y)
         args.x = rm_py._expand_space_separated_names(args.x)
         args.fe = rm_py._expand_space_separated_names(args.fe)
         args.clust = rm_py._expand_space_separated_names(args.clust)
+        args.grouping_variable = rm_py._expand_space_separated_names(args.grouping_variable)
+        args.grouping_variable_by_ind_time = rm_py._expand_space_separated_names(args.grouping_variable_by_ind_time)
+        args.grouping_variable_by_time = rm_py._expand_space_separated_names(args.grouping_variable_by_time)
+        args.grouping_variable_by_none = rm_py._expand_space_separated_names(args.grouping_variable_by_none)
     except ValueError as exc:
         parser.error(str(exc))
     controls_test = list(args.controls_test) if args.controls_test else (list(args.controls) if args.controls else [])
@@ -371,6 +423,7 @@ def main() -> None:
     try:
         controls_test_flat, controls_test_slots = rm_py._normalize_controls_test(controls_test)
         controls_must_flat, controls_must_slots = rm_py._normalize_controls_must(controls_must)
+        rm_py._validate_control_lists_do_not_overlap(controls_test_flat, controls_must_flat)
     except ValueError as exc:
         parser.error(str(exc))
     matrix_controls = rm_py._varying_must_controls(controls_must_slots) + controls_test_flat
@@ -384,6 +437,14 @@ def main() -> None:
     is_auto = any(spec_flags.values())
     if not is_auto and args.engine == "stata":
         parser.error("Stata 引擎仅支持自动规格模式，请至少启用一个 absorb_* flag。")
+    grouping_specs = rm_py._collect_grouping_variable_specs(
+        grouping_variable=list(args.grouping_variable or []),
+        grouping_variable_by_ind_time=list(args.grouping_variable_by_ind_time or []),
+        grouping_variable_by_time=list(args.grouping_variable_by_time or []),
+        grouping_variable_by_none=list(args.grouping_variable_by_none or []),
+    )
+    if grouping_specs and args.engine != "stata":
+        parser.error("grouping_variable_* 仅支持 --engine stata。")
     if not is_auto:
         if not args.fe:
             parser.error("手动模式需要 --fe。")
@@ -391,11 +452,20 @@ def main() -> None:
             parser.error("手动模式需要 --clust 或 --gen-clust2。")
         if args.gen_clust2 and len(args.fe) < 2:
             parser.error("--gen-clust2 需要至少提供 2 个 --fe 列。")
+        if grouping_specs:
+            parser.error("grouping_variable_* 仅支持自动规格模式。")
 
     data_path = pathlib.Path(args.data).expanduser()
     print(f"读取数据：{data_path}")
     df = rm_common.load_dataframe(data_path)
     print(f"数据读取完成：{len(df):,} 行 × {len(df.columns)} 列")
+    try:
+        grouping_specs = rm_py._validate_grouping_variable_specs(
+            df,
+            grouping_specs,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_root = pathlib.Path(args.output).expanduser()
@@ -418,10 +488,14 @@ def main() -> None:
         "controls_test_flat": controls_test_flat,
         "controls_must": controls_must,
         "controls_must_flat": controls_must_flat,
+        "grouping_variable_by_ind_time": [var for scope, var in grouping_specs if scope == "by_ind_time"],
+        "grouping_variable_by_time": [var for scope, var in grouping_specs if scope == "by_time"],
+        "grouping_variable_by_none": [var for scope, var in grouping_specs if scope == "by_none"],
         "output": str(output_root),
         "run_output_dir": str(run_output_dir),
         "dpi": args.dpi,
         "fig_width": args.fig_width,
+        "order": args.order,
         "n_jobs": args.n_jobs,
         "resolved_n_jobs": resolved_n_jobs,
         "firm_fe": args.firm_fe,
@@ -453,16 +527,18 @@ def main() -> None:
             planned_plot_fe_types = [tuple(args.fe) for _combo in combos]
     else:
         drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
+        grouping_multiplier = max(1, len(grouping_specs))
         planned_plot_fe_types = [
             tuple(spec_def["fe_keys"])
             for _combo in combos
             for spec_def in drawable_specs
+            for _group in range(grouping_multiplier)
         ]
 
     plot_progress = _PlotProgressEstimator(planned_plot_fe_types)
 
     def on_plot_done(output_path: pathlib.Path, fe_type: tuple[str, ...], elapsed_seconds: float) -> None:
-        print(plot_progress.update(fe_type, elapsed_seconds, output_path.name))
+        print(plot_progress.update(fe_type, elapsed_seconds))
 
     def plot_stata_item(item: dict[str, Any]) -> None:
         meta_path = item["meta_path"]
@@ -471,7 +547,12 @@ def main() -> None:
         meta = rm_plot.load_plot_meta(meta_path)
         meta["elapsed_seconds_preplot"] = float(item["elapsed_seconds"])
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        rm_plot.plot_from_files(results_path=results_path, meta_path=meta_path, output_path=output_path)
+        rm_plot.plot_from_files(
+            results_path=results_path,
+            meta_path=meta_path,
+            output_path=output_path,
+            verbose=False,
+        )
         _cleanup_plot_handoff(
             results_path=results_path,
             meta_path=meta_path,
@@ -494,6 +575,7 @@ def main() -> None:
             controls_test_slots=controls_test_slots,
             controls_must_flat=controls_must_flat,
             controls_must_slots=controls_must_slots,
+            grouping_variables=grouping_specs,
             matrix_controls=matrix_controls,
             spec_flags=spec_flags,
             run_output_dir=run_output_dir,
@@ -528,19 +610,25 @@ def main() -> None:
         else:
             pair_rows = []
             pair_total_specs = 0
+            pair_summary_rows = []
             for item in stata_results.get((y_var, x_var), []):
                 records = item["records"]
                 pair_rows.extend(item["sig_rows"])
-                pair_total_specs += len(records)
+                if item.get("counts_as_base_spec", True):
+                    pair_total_specs += len(records)
+                    pair_summary_rows.extend(item.get("summary_sig_rows", item["sig_rows"]))
+            summary_rows = pair_summary_rows
 
         all_sig_rows.extend(pair_rows)
         total_sig_specs += pair_total_specs
+        if args.engine == "python":
+            summary_rows = pair_rows
         combo_summaries.append({
             "y": y_var,
             "x": x_var,
             "n_specs": pair_total_specs,
-            "n_sig": len(pair_rows),
-            "star_counts": rm_py._sig_star_counts(pair_rows),
+            "n_sig": len(summary_rows),
+            "star_counts": rm_py._sig_star_counts(summary_rows),
         })
 
     rm_py._export_sig_table(
@@ -549,11 +637,8 @@ def main() -> None:
         n_specs=total_sig_specs,
         print_summary=False,
     )
-    for summary in combo_summaries:
-        print(
-            f"Y = {summary['y']}  ×  X = {summary['x']} "
-            f"{rm_py._format_sig_summary(summary['n_sig'], summary['n_specs'], summary['star_counts'])}"
-        )
+    for line in rm_py._format_combo_summary_lines(combo_summaries):
+        print(line)
     print(f"\n全部完成：{len(combos)} 个 y×x 组合")
 
 
