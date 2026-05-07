@@ -27,7 +27,7 @@ data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my
 
 
 
-y = ["analyst_error_quarter_a", "analyst_dispersion_quarter_a"]
+y = ["analyst_error_quarter_pa", "analyst_dispersion_quarter_pa"]
 # y = ["analyst_dispersion_quarter_a", "analyst_dispersion_quarter_pa", "analyst_dispersion_quarter_f"]
 # y = ["analyst_error_quarter_a", "analyst_error_quarter_pa", "analyst_error_quarter_f"]
 # y = ["analyst_error_m_a", "analyst_error_m_pa", "analyst_error_m_f"]
@@ -41,8 +41,8 @@ controls_test = ["Big4", "disclosure_quality", "Loss", "Goodnews", "cnt_sent", "
 controls_must = [
     "qual", "no_info",  # 图片数量
     "Lev", "Size", "ROA", "BM", "Growth",  # 财务指标
-    "SOE", "INST", "Mshare", "Top1",  # 股权结构
-    ["absaemjones", "absaemdd", "absaemmn"], # 信息披露质量
+    "SOE", "INST",  "Top1",  # 股权结构
+    "absaemdd", # 信息披露质量
       # 文本特征
     "analyst_report", "business_complexity_indyearadj" # 分析师覆盖度
 ]
