@@ -32,6 +32,7 @@ from typing import Any, Callable, cast
 import pandas as pd
 
 import regression_monkey_common as rm_common
+import regression_monkey_html as rm_html
 import regression_monkey_plot as rm_plot
 import regression_monkey_py as rm_py
 
@@ -56,6 +57,7 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--clust", metavar="COL", nargs="+")
     parser.add_argument("--gen-clust2", dest="gen_clust2", action="store_true")
     parser.add_argument("--output", default="outputs", metavar="DIR")
+    parser.add_argument("--export-format", choices=["png", "html", "both"], default="png", help="导出格式：png、html 或 both")
     parser.add_argument("--dpi", default=150, type=int)
     parser.add_argument("--fig-width", default=14.0, type=float, metavar="INCHES")
     parser.add_argument("--n-jobs", default=0, type=int, metavar="N")
@@ -114,6 +116,32 @@ def _manual_plot_group(fe_cols: list[str], clust_cols: list[str]) -> str:
     return f"manual_ab_{fe_part}_cl_{clust_part}"
 
 
+def _matrix_alternative_groups(
+    *,
+    controls_must_slots: list[rm_py.ControlSlot],
+    controls_test_slots: list[rm_py.ControlSlot],
+) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    cursor = 0
+    for slot in controls_must_slots:
+        if len(slot) <= 1:
+            continue
+        start = cursor
+        end = cursor + len(slot) - 1
+        groups.append({"kind": "controls_must", "start": start, "end": end, "names": list(slot), "label": f"1 of {len(slot)}"})
+        cursor = end + 1
+
+    for slot in controls_test_slots:
+        if len(slot) <= 1:
+            cursor += 1
+            continue
+        start = cursor
+        end = cursor + len(slot) - 1
+        groups.append({"kind": "controls_test", "start": start, "end": end, "names": list(slot), "label": f"0/1 of {len(slot)}"})
+        cursor = end + 1
+    return groups
+
+
 def _write_and_plot(
     *,
     records: list[rm_py.SpecRecord],
@@ -130,12 +158,39 @@ def _write_and_plot(
         meta={**meta, "output_path": str(output_path)},
         verbose=verbose,
     )
-    rm_plot.plot_from_files(
+    _render_from_files(
         results_path=results_path,
         meta_path=meta_path,
         output_path=output_path,
+        export_format=str(meta.get("export_format", "png")),
         verbose=verbose,
     )
+
+
+def _render_from_files(
+    *,
+    results_path: pathlib.Path,
+    meta_path: pathlib.Path,
+    output_path: pathlib.Path,
+    export_format: str,
+    verbose: bool = True,
+) -> None:
+    if export_format in {"png", "both"}:
+        rm_plot.plot_from_files(
+            results_path=results_path,
+            meta_path=meta_path,
+            output_path=output_path,
+            verbose=verbose,
+        )
+    if export_format in {"html", "both"}:
+        html_output_path = output_path.with_suffix(".html")
+        rm_html.html_from_files(
+            results_path=results_path,
+            meta_path=meta_path,
+            output_path=html_output_path,
+        )
+        if verbose:
+            print(f"[Saved] {html_output_path}")
 
 
 def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path, keep_temp: bool) -> None:
@@ -147,12 +202,12 @@ def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path
 
 def _format_plot_progress(done: int, total: int, *, width: int = 30) -> str:
     if total <= 0:
-        return "[绘图进度] 无待绘制图片"
+        return "[导出进度] 无待导出结果"
     done = min(max(done, 0), total)
     filled = round(width * done / total)
     bar = "#" * filled + "-" * (width - filled)
     pct = done * 100 / total
-    return f"[绘图进度] |{bar}| {done}/{total} ({pct:5.1f}%)"
+    return f"[导出进度] |{bar}| {done}/{total} ({pct:5.1f}%)"
 
 
 def _format_duration(seconds: float) -> str:
@@ -229,6 +284,7 @@ def _run_python_pair(
     controls_test_flat: list[str],
     controls_must_flat: list[str],
     matrix_controls: list[str],
+    matrix_alt_groups: list[dict[str, Any]],
     spec_flags: dict[str, bool],
     is_auto: bool,
     run_output_dir: pathlib.Path,
@@ -295,12 +351,16 @@ def _run_python_pair(
                     "controls_test_flat": controls_test_flat,
                     "controls_must_flat": controls_must_flat,
                     "matrix_controls": matrix_controls,
+                    "matrix_alt_groups": matrix_alt_groups,
                     "show_special_markers": True,
                     "fig_width": args.fig_width,
                     "dpi": args.dpi,
                     "order": args.order,
-                    "sort_by_signed_p": rm_py._order_sorts_by_signed_p(args.order),
+                    "sort_by_p_mode": rm_py._order_uses_p_mode(args.order),
+                    "sort_by_signed_p": rm_py._order_uses_p_mode(args.order),
                     "title_suffix": spec_def["help"].format(**fmt),
+                    "elapsed_seconds_preplot": perf_counter() - spec_t0,
+                    "export_format": args.export_format,
                 },
             )
             _cleanup_plot_handoff(
@@ -359,12 +419,16 @@ def _run_python_pair(
             "controls_test_flat": controls_test_flat,
             "controls_must_flat": controls_must_flat,
             "matrix_controls": matrix_controls,
+            "matrix_alt_groups": matrix_alt_groups,
             "show_special_markers": True,
             "fig_width": args.fig_width,
             "dpi": args.dpi,
             "order": args.order,
-            "sort_by_signed_p": rm_py._order_sorts_by_signed_p(args.order),
+            "sort_by_p_mode": rm_py._order_uses_p_mode(args.order),
+            "sort_by_signed_p": rm_py._order_uses_p_mode(args.order),
             "title_suffix": f"manual FE = {', '.join(args.fe)}",
+            "elapsed_seconds_preplot": perf_counter() - spec_t0,
+            "export_format": args.export_format,
         },
     )
     _cleanup_plot_handoff(
@@ -397,7 +461,7 @@ def main() -> None:
             "grouping_variable", "grouping_variable_by_ind_time",
             "grouping_variable_by_time", "grouping_variable_by_none",
             "output", "dpi", "fig_width", "n_jobs", "order", "p", "firm_fe", "ind_fe", "time_fe",
-            "region_fe", "fe", "clust", "gen_clust2", "stata_path", "keep_temp",
+            "region_fe", "fe", "clust", "gen_clust2", "stata_path", "keep_temp", "export_format",
         } | set(rm_py._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
@@ -427,6 +491,10 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
     matrix_controls = rm_py._varying_must_controls(controls_must_slots) + controls_test_flat
+    matrix_alt_groups = _matrix_alternative_groups(
+        controls_must_slots=controls_must_slots,
+        controls_test_slots=controls_test_slots,
+    )
 
     if not args.data or not args.y or not args.x:
         parser.error("必须提供 data / y / x（可通过 TOML 或 CLI 指定）")
@@ -495,6 +563,7 @@ def main() -> None:
         "run_output_dir": str(run_output_dir),
         "dpi": args.dpi,
         "fig_width": args.fig_width,
+        "export_format": args.export_format,
         "order": args.order,
         "n_jobs": args.n_jobs,
         "resolved_n_jobs": resolved_n_jobs,
@@ -546,11 +615,13 @@ def main() -> None:
         output_path = item["output_path"]
         meta = rm_plot.load_plot_meta(meta_path)
         meta["elapsed_seconds_preplot"] = float(item["elapsed_seconds"])
+        meta["export_format"] = args.export_format
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        rm_plot.plot_from_files(
+        _render_from_files(
             results_path=results_path,
             meta_path=meta_path,
             output_path=output_path,
+            export_format=args.export_format,
             verbose=False,
         )
         _cleanup_plot_handoff(
@@ -560,7 +631,7 @@ def main() -> None:
         )
         on_plot_done(output_path, tuple(item.get("fe_type", ())), float(item["elapsed_seconds"]))
 
-    print(f"{_format_plot_progress(0, plot_progress.total)}  总图片数：{plot_progress.total}")
+    print(f"{_format_plot_progress(0, plot_progress.total)}  总导出数：{plot_progress.total}")
 
     if args.engine == "stata":
         import regression_monkey_stata as rm_stata
@@ -577,6 +648,7 @@ def main() -> None:
             controls_must_slots=controls_must_slots,
             grouping_variables=grouping_specs,
             matrix_controls=matrix_controls,
+            matrix_alt_groups=matrix_alt_groups,
             spec_flags=spec_flags,
             run_output_dir=run_output_dir,
             on_item_ready=plot_stata_item,
@@ -601,6 +673,7 @@ def main() -> None:
                 controls_test_flat=controls_test_flat,
                 controls_must_flat=controls_must_flat,
                 matrix_controls=matrix_controls,
+                matrix_alt_groups=matrix_alt_groups,
                 spec_flags=spec_flags,
                 is_auto=is_auto,
                 run_output_dir=run_output_dir,

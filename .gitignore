@@ -9,6 +9,7 @@ outputs/
 reports/
 tests/
 temp/
+tempCodeRunnerFile.*
 data/
 legacy/
 CLAUDE.md

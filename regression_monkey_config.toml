@@ -37,13 +37,15 @@ y = ["analyst_error_quarter_pa", "analyst_dispersion_quarter_pa"]
 x = ["quant"]
 # x_list = ["ln_info", "ln_quant", "ln_qual"]
 
-controls_test = ["Big4", "disclosure_quality", "Loss", "Goodnews", "cnt_sent", "readability", "tone_index1", "similarity_tf_idf_3", "similarity_tf_idf_2", "meps_std_4y"]
+controls_test = ["Mshare", ["AuditFee", "ln_audit_fee"], ["cnt_char cnt_char_ex_num cnt_char_ex_num_eng cnt_word cnt_word_ex_num cnt_word_ex_num_eng cnt_sent cnt_sent_ex_num cnt_sent_ex_num_eng"] ]
 controls_must = [
     "qual", "no_info",  # 图片数量
     "Lev", "Size", "ROA", "BM", "Growth",  # 财务指标
-    "SOE", "INST",  "Top1",  # 股权结构
-    "absaemdd", # 信息披露质量
-      # 文本特征
+    "SOE", "INST", "Top1",  # 股权结构
+    "Loss", "Goodnews", "meps_std_4y", # 盈余方向和波动性
+    "disclosure_quality",  # 整体信息披露质量
+    "Big4",  # 会计数字质量
+    "readability", "tone_index1", "similarity_tf_idf_3", "similarity_tf_idf_2",   # 文本特征
     "analyst_report", "business_complexity_indyearadj" # 分析师覆盖度
 ]
 
@@ -53,12 +55,13 @@ grouping_variable_by_time = []
 grouping_variable_by_none = []
 
 # ── 输出 ──────────────────────────────────────────────────────
-# output 为输出目录；程序会在其中自动创建时间戳子目录，并固定导出 PNG
+# output 为输出目录；程序会在其中自动创建时间戳子目录，并按 export_format 导出 PNG/HTML
 output = "outputs"
+export_format = "png"  # png：静态图片；html：交互式网页；both：两者都导出
 dpi = 300
 fig_width = 14
 n_jobs = 0
-order = "p"  # coef：按系数排序；p：按 p_value * sign(coef) 从大到小排序
+order = "p"  # coef：按系数排序；p：负系数在左且 p 从大到小，正系数在右且 p 从小到大
 
 # ── 固定效应变量标识符 ────────────────────────────────────────
 Firm_FE   = "code"   # 个体（企业）固定效应列名

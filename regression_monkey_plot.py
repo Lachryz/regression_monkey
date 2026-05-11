@@ -46,7 +46,9 @@ def plot_from_files(
     meta = load_plot_meta(meta_file)
     records = rm_py.records_from_dataframe(pd.read_csv(results_file))
     p_alias = bool(sort_by_signed_p) if sort_by_signed_p is not None else (
-        bool(meta.get("sort_by_signed_p", False)) if order is None else False
+        bool(meta.get("sort_by_p_mode", meta.get("sort_by_signed_p", False)))
+        if order is None
+        else False
     )
     plot_order = rm_py._normalize_plot_order(
         str(meta.get("order", "coef") if order is None else order),
@@ -71,7 +73,7 @@ def plot_from_files(
         grouping_variable=meta.get("grouping_variable"),
         grouped_plot_records=list(meta.get("grouped_plot_records", [])),
         interaction_plot_records=list(meta.get("interaction_plot_records", [])),
-        sort_by_signed_p=rm_py._order_sorts_by_signed_p(plot_order),
+        sort_by_signed_p=rm_py._order_uses_p_mode(plot_order),
         verbose=verbose,
     )
 

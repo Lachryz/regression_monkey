@@ -301,9 +301,13 @@ def _format_plot_regression_count(count: int) -> str:
     return f"[本图回归数] {count:,} 个回归"
 
 
-def _signed_p_sort_key(record: SpecRecord) -> float:
-    sign = -1.0 if float(record["coef"]) < 0 else 1.0
-    return sign * float(record["p_value"])
+def _sort_records_by_p_mode(records: list[SpecRecord]) -> list[SpecRecord]:
+    """p 模式只使用 p_value 本身排序；系数符号只决定左右分段。"""
+    neg = [record for record in records if float(record["coef"]) < 0]
+    pos = [record for record in records if float(record["coef"]) >= 0]
+    neg.sort(key=lambda record: float(record["p_value"]), reverse=True)
+    pos.sort(key=lambda record: float(record["p_value"]))
+    return neg + pos
 
 
 def _sort_records_for_plot(
@@ -312,7 +316,7 @@ def _sort_records_for_plot(
     sort_by_signed_p: bool = False,
 ) -> list[SpecRecord]:
     if sort_by_signed_p:
-        return sorted(records, key=_signed_p_sort_key, reverse=True)
+        return _sort_records_by_p_mode(list(records))
     return list(records)
 
 
@@ -326,6 +330,10 @@ def _normalize_plot_order(order: str | None, *, p_alias: bool = False) -> str:
 
 
 def _order_sorts_by_signed_p(order: str | None, *, p_alias: bool = False) -> bool:
+    return _normalize_plot_order(order, p_alias=p_alias) == "p"
+
+
+def _order_uses_p_mode(order: str | None, *, p_alias: bool = False) -> bool:
     return _normalize_plot_order(order, p_alias=p_alias) == "p"
 
 
@@ -2042,13 +2050,15 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     _C95  = "#00F900"   # Spring（2 stars）
     _C99  = "#FF2600"   # 红（3 stars）
     _CINS = "#000000"   # 黑（不显著）
-    _CSTAR1 = _C90      # BlueBerry（1 star）
-    _CSTAR2 = _C95      # Spring（2 stars）
-    _CSTAR3 = _C99      # 红（3 stars）
-    _CSTAR0 = "#000000"  # 黑（Star 面板中的不显著 0 线）
     _CFUL = "#FF2F92"   # Full controls 特殊规格竖线/外圈
+    _CSTAR_NEG = _C90   # 负系数 Star 色块：BlueBerry
+    _CSTAR_POS = _CFUL  # 正系数 Star 色块：红/玫红
+    _CSTAR0 = "#000000"  # 黑（Star 面板中的不显著 0 线）
     _CNOC = "#ff8c00"   # 橙（无 test 控制变量规格外圈）
     _CSWITCH = "#2255cc"  # 蓝（最接近 0 的系数点）
+
+    def _set_horizontal_ylabel(ax, label: str, *, fontsize: int = 8, labelpad: float = 18.0) -> None:
+        ax.set_ylabel(label, fontsize=fontsize, rotation=0, ha="right", va="center", labelpad=labelpad)
 
     # 仅当系数序列跨过 0 时，才标记最接近 0 的单个规格点
     is_sign_switch = np.zeros(n, dtype=bool)
@@ -2066,17 +2076,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             np.where(p_values < 0.10, 1, 0),
         ),
     )
-    star_colors = {
-        1: _CSTAR1,
-        2: _CSTAR2,
-        3: _CSTAR3,
-    }
-
-    p_gap = 0.10
+    p_gap = 0.16
     p_outer_pad_x = 0.12
     p_outer_pad_y = 0.18
     p_half_w = 0.5 - p_gap
-    p_half_h = 0.5 - p_gap
+    p_half_h = 0.33
     for i in range(n):
         blocks = int(star_abs[i])
         if blocks == 0:
@@ -2089,10 +2093,10 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                 zorder=4,
             )
             continue
-        color_code = star_colors[blocks]
         direction = -1 if coefs[i] < 0 else 1
+        color_code = _CSTAR_NEG if coefs[i] < 0 else _CSTAR_POS
         for block_idx in range(blocks):
-            y_center = direction * (block_idx + 0.5)
+            y_center = direction * (block_idx + 0.68)
             ax_p.add_patch(
                 mpatches.Rectangle(
                     (i - p_half_w, y_center - p_half_h),
@@ -2104,7 +2108,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                     zorder=2,
                 )
             )
-    ax_p.axhline(0, color="#cc2222", lw=0.9, ls="--", zorder=1)
+    ax_p.axhline(0, color="#111111", lw=0.8, ls="-", zorder=1)
     if show_special_markers and is_full.any():
         for fi in np.where(is_full)[0]:
             ax_p.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=5)
@@ -2115,7 +2119,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         ax_p.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=5)
     ax_p.set_xlim(-0.5 - p_outer_pad_x, n - 0.5 + p_outer_pad_x)
     ax_p.set_ylim(-3.0 - p_outer_pad_y, 3.0 + p_outer_pad_y)
-    ax_p.set_ylabel("Star", fontsize=8)
+    _set_horizontal_ylabel(ax_p, "Star", fontsize=8)
     ax_p.set_yticks([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
     ax_p.set_yticklabels(["-3", "-2", "-1", "0", "+1", "+2", "+3"], fontfamily="monospace")
     ax_p.tick_params(axis="y", labelsize=8)
@@ -2191,7 +2195,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             zorder=9,
         )
 
-    ax1.set_ylabel("Coef.", fontsize=9)
+    _set_horizontal_ylabel(ax1, "Coef.", fontsize=9)
     ax1.tick_params(axis="y", labelsize=8)
     ax1.tick_params(axis="x", bottom=False, labelbottom=False)
     ax1.spines[["top", "right", "left", "bottom"]].set_visible(True)
@@ -2340,6 +2344,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     obs_mean = float(np.mean(obs_arr))
     pos_mask = coefs >= 0
     neg_mask = ~pos_mask
+    _COBS = "#9CA3AF"
 
     if pos_mask.any():
         ax3.bar(
@@ -2347,8 +2352,8 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             obs_arr[pos_mask] - obs_mean,
             bottom=obs_mean,
             width=1.0,
-            color="#cc2222",
-            edgecolor="#cc2222",
+            color=_COBS,
+            edgecolor=_COBS,
             alpha=0.35,
             linewidth=0.25,
             antialiased=True,
@@ -2362,8 +2367,8 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             obs_arr[neg_mask] - obs_mean,
             bottom=obs_mean,
             width=1.0,
-            color="#2255cc",
-            edgecolor="#2255cc",
+            color=_COBS,
+            edgecolor=_COBS,
             alpha=0.35,
             linewidth=0.25,
             antialiased=True,
@@ -2371,7 +2376,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             zorder=2,
             align="center",
         )
-    ax3.axhline(obs_mean, color="#444444", lw=0.8, ls="--", zorder=3)
+    ax3.axhline(obs_mean, color="#444444", lw=0.8, ls="-", zorder=3)
     if show_special_markers:
         for fi in np.where(is_full)[0]:
             ax3.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
@@ -2380,7 +2385,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     for si in np.where(is_sign_switch)[0]:
         ax3.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=4)
     ax3.set_xlim(-0.5, n - 0.5)
-    ax3.set_ylabel("Obs.", fontsize=8)
+    _set_horizontal_ylabel(ax3, "Obs.", fontsize=8)
     obs_min = float(np.min(obs_arr))
     obs_max = float(np.max(obs_arr))
     ax3.set_yticks([obs_min, obs_mean, obs_max])
@@ -2475,7 +2480,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         for si in np.where(is_sign_switch)[0]:
             ax_group.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=7)
         ax_group.set_xlim(-0.5, n - 0.5)
-        ax_group.set_ylabel("Grouped\nCoef.", fontsize=8)
+        _set_horizontal_ylabel(ax_group, "Grouped\nCoef.", fontsize=8, labelpad=26)
         ax_group.tick_params(axis="y", labelsize=8)
         ax_group.tick_params(axis="x", bottom=False, labelbottom=False)
         ax_group.legend(
@@ -2539,7 +2544,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             for si in np.where(is_sign_switch)[0]:
                 ax_interaction.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=7)
             ax_interaction.set_xlim(-0.5, n - 0.5)
-            ax_interaction.set_ylabel("Interaction\nCoef.", fontsize=8)
+            _set_horizontal_ylabel(ax_interaction, "Interaction\nCoef.", fontsize=8, labelpad=34)
             ax_interaction.tick_params(axis="y", labelsize=8)
             ax_interaction.tick_params(axis="x", bottom=False, labelbottom=False)
             ax_interaction.legend(
@@ -2597,7 +2602,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
             ax_group_star.axvline(si, color=_CSWITCH, lw=1.1, ls="-", zorder=5)
         ax_group_star.set_xlim(-0.5, n - 0.5)
         ax_group_star.set_ylim(-3.3, 3.3)
-        ax_group_star.set_ylabel("Star", fontsize=8)
+        _set_horizontal_ylabel(ax_group_star, "Star", fontsize=8)
         ax_group_star.set_yticks([-3, -2, -1, 0, 1, 2, 3])
         ax_group_star.set_yticklabels(["-3", "-2", "-1", "0", "+1", "+2", "+3"], fontfamily="monospace")
         ax_group_star.tick_params(axis="y", labelsize=8)
@@ -2661,7 +2666,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         )
         ax_group_obs.set_ylim(-max_group_obs * 1.1, max_group_obs * 1.1)
         ax_group_obs.set_xlim(-0.5, n - 0.5)
-        ax_group_obs.set_ylabel("Grouped\nObs.", fontsize=8)
+        _set_horizontal_ylabel(ax_group_obs, "Grouped\nObs.", fontsize=8, labelpad=26)
         ax_group_obs.set_yticks([-max_group_obs, 0.0, max_group_obs])
         ax_group_obs.set_yticklabels([f"{max_group_obs:.0f}", "0", f"{max_group_obs:.0f}"])
         ax_group_obs.tick_params(axis="y", labelsize=8)
@@ -3073,7 +3078,7 @@ def main() -> None:
                 n_jobs      = resolved_n_jobs,
                 export_sig_table = False,
                 render_plot = False,
-                sort_by_signed_p = _order_sorts_by_signed_p(args.order),
+                sort_by_signed_p = _order_uses_p_mode(args.order),
             )
             for spec_name, records, _fig in auto_results:
                 if not records:
@@ -3096,7 +3101,8 @@ def main() -> None:
                         "fig_width": args.fig_width,
                         "dpi": args.dpi,
                         "order": args.order,
-                        "sort_by_signed_p": _order_sorts_by_signed_p(args.order),
+                        "sort_by_p_mode": _order_uses_p_mode(args.order),
+                        "sort_by_signed_p": _order_uses_p_mode(args.order),
                         "title_suffix": spec_def["help"].format(
                             firm=args.firm_fe,
                             ind=args.ind_fe,
@@ -3160,7 +3166,7 @@ def main() -> None:
                 n_jobs       = resolved_n_jobs,
                 export_sig_table = False,
                 render_plot = False,
-                sort_by_signed_p = _order_sorts_by_signed_p(args.order),
+                sort_by_signed_p = _order_uses_p_mode(args.order),
             )
             write_analysis_artifacts(
                 records=records,
@@ -3178,7 +3184,8 @@ def main() -> None:
                     "fig_width": args.fig_width,
                     "dpi": args.dpi,
                     "order": args.order,
-                    "sort_by_signed_p": _order_sorts_by_signed_p(args.order),
+                    "sort_by_p_mode": _order_uses_p_mode(args.order),
+                    "sort_by_signed_p": _order_uses_p_mode(args.order),
                     "title_suffix": f"manual FE = {', '.join(args.fe)}",
                     "output_path": str(run_output_dir / f"{pair_stem}.png"),
                 },
