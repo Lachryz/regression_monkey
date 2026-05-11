@@ -18,6 +18,7 @@ import argparse
 import base64
 import html
 import json
+import math
 import pathlib
 from time import perf_counter
 from typing import Any
@@ -99,12 +100,15 @@ def _record_payload(
     record: rm_py.SpecRecord, index: int, matrix_controls: list[str]
 ) -> dict[str, Any]:
     included = [n for n in matrix_controls if n in record["controls_all"]]
+    adj_r2_raw = float(record.get("adj_r2", float("nan")))
+    adj_r2 = adj_r2_raw if math.isfinite(adj_r2_raw) else None
     return {
         "index": index,
         "coef": float(record["coef"]),
         "se": float(record["se"]),
         "t_value": float(record["t_value"]),
         "p_value": float(record["p_value"]),
+        "adj_r2": adj_r2,
         "ci99_lo": float(record["ci99_lo"]),
         "ci99_hi": float(record["ci99_hi"]),
         "ci95_lo": float(record["ci95_lo"]),
@@ -118,6 +122,7 @@ def _record_payload(
         "color": _point_color(float(record["p_value"])),
         "controls_all": sorted(record["controls_all"]),
         "included_matrix_controls": included,
+        "control_stats": list(record.get("control_stats", [])),
     }
 
 
@@ -126,10 +131,24 @@ def _display_subtitle(value: Any) -> str:
     return text.split(" - ", 1)[0]
 
 
-def _controls_must_line(values: Any) -> str:
+def _controls_must_line(values: Any, max_width: int = 100) -> str:
     controls = list(values or [])
-    text = ", ".join(str(v) for v in controls) if controls else "(none)"
-    return f"controls_must = {text}"
+    if not controls:
+        return "controls_must = (none)"
+    prefix = "controls_must = "
+    indent = " " * len(prefix)
+    lines: list[str] = []
+    current = prefix
+    for item in controls:
+        sep = "" if current == prefix else ", "
+        candidate = current + sep + str(item)
+        if current != prefix and len(candidate) > max_width:
+            lines.append(current)
+            current = indent + str(item)
+        else:
+            current = candidate
+    lines.append(current)
+    return "\n".join(lines)
 
 
 def _controls_test_line(values: Any, alt_groups: Any = None) -> str:
@@ -171,7 +190,7 @@ def _controls_test_line(values: Any, alt_groups: Any = None) -> str:
     return "controls_test = " + (", ".join(pieces) if pieces else "(none)")
 
 
-def _controls_test_line_html(values: Any, alt_groups: Any = None) -> str:
+def _controls_test_line_html(values: Any, alt_groups: Any = None, max_width: int = 100) -> str:
     controls = [str(v) for v in list(values or [])]
     if not controls:
         return "controls_test = (none)"
@@ -188,13 +207,9 @@ def _controls_test_line_html(values: Any, alt_groups: Any = None) -> str:
     group_by_start = {
         g["start"]: g for g in groups if 0 <= g["start"] <= g["end"] < len(controls)
     }
-    grouped_idx = {
-        idx
-        for g in group_by_start.values()
-        for idx in range(g["start"], g["end"] + 1)
-    }
 
-    pieces: list[str] = []
+    # Build pieces as (html_markup, text_char_count) so we can wrap on text length
+    pieces: list[tuple[str, int]] = []
     color_idx = 0
     idx = 0
     while idx < len(controls):
@@ -203,14 +218,34 @@ def _controls_test_line_html(values: Any, alt_groups: Any = None) -> str:
             fill = _ALT_GROUP_COLORS[color_idx % len(_ALT_GROUP_COLORS)]
             color_idx += 1
             text = "[" + ", ".join(controls[idx : grp["end"] + 1]) + "]"
-            pieces.append(
-                f'<span class="ctrl-group-title" style="color:{html.escape(fill, quote=True)}">{html.escape(text)}</span>'
-            )
+            pieces.append((
+                f'<span class="ctrl-group-title" style="color:{html.escape(fill, quote=True)}">{html.escape(text)}</span>',
+                len(text),
+            ))
             idx = grp["end"] + 1
             continue
-        pieces.append(html.escape(controls[idx]))
+        pieces.append((html.escape(controls[idx]), len(controls[idx])))
         idx += 1
-    return "controls_test = " + (", ".join(pieces) if pieces else "(none)")
+
+    prefix = "controls_test = "
+    indent_html = "&nbsp;" * len(prefix)
+    lines: list[str] = []
+    current_html = prefix
+    current_len = len(prefix)
+    first = True
+    for piece_html, piece_len in pieces:
+        sep = ", " if not first else ""
+        candidate_len = current_len + (2 if not first else 0) + piece_len
+        if not first and candidate_len > max_width:
+            lines.append(current_html)
+            current_html = indent_html + piece_html
+            current_len = len(prefix) + piece_len
+        else:
+            current_html += sep + piece_html
+            current_len = candidate_len
+        first = False
+    lines.append(current_html)
+    return "<br>".join(lines)
 
 
 def _payload_controls_must_line(payload: dict[str, Any]) -> str:
@@ -284,6 +319,29 @@ def html_from_files(
     sort_by_signed_p: bool | None = None,
 ) -> pathlib.Path:
     """Render one interactive specification-curve HTML from standard handoff files."""
+    payload = payload_from_files(
+        results_path=results_path,
+        meta_path=meta_path,
+        order=order,
+        sort_by_signed_p=sort_by_signed_p,
+    )
+    default_out = pathlib.Path(
+        str(payload.get("outputPath", pathlib.Path(results_path).with_suffix(".html")))
+    ).with_suffix(".html")
+    out = pathlib.Path(output_path) if output_path is not None else default_out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_build_html(payload), encoding="utf-8")
+    return out
+
+
+def payload_from_files(
+    *,
+    results_path: str | pathlib.Path,
+    meta_path: str | pathlib.Path,
+    order: str | None = None,
+    sort_by_signed_p: bool | None = None,
+) -> dict[str, Any]:
+    """Build the single-chart HTML payload from standard handoff files."""
     render_t0 = perf_counter()
     results_file = pathlib.Path(results_path)
     meta_file = pathlib.Path(meta_path)
@@ -318,9 +376,12 @@ def html_from_files(
         "controlsTestLine": _controls_test_line(
             meta.get("controls_test_flat"), meta.get("matrix_alt_groups")
         ),
+        "controlsMustNames": list(meta.get("controls_must_flat", [])),
         "controlsTestNames": list(meta.get("controls_test_flat", [])),
         "y": meta.get("y", ""),
         "x": meta.get("x", ""),
+        "specName": meta.get("spec_name", ""),
+        "outputPath": str(meta.get("output_path", results_file.with_suffix(".html"))),
         "matrixControls": matrix_controls,
         "matrixAltGroups": list(meta.get("matrix_alt_groups", [])),
         "showSpecialMarkers": bool(meta.get("show_special_markers", True)),
@@ -336,17 +397,217 @@ def html_from_files(
         payload["elapsedSeconds"] = float(payload["elapsedSeconds"]) + (
             perf_counter() - render_t0
         )
+    return payload
 
-    default_out = pathlib.Path(
-        str(meta.get("output_path", results_file.with_suffix(".html")))
-    ).with_suffix(".html")
-    out = pathlib.Path(output_path) if output_path is not None else default_out
+
+def html_bundle_from_payloads(
+    payloads: list[dict[str, Any]],
+    *,
+    output_path: str | pathlib.Path,
+) -> pathlib.Path:
+    """Render one HTML wrapper that switches among multiple chart payloads."""
+    out = pathlib.Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(_build_html(payload), encoding="utf-8")
+    out.write_text(_build_bundle_html(payloads), encoding="utf-8")
     return out
 
 
 # ── HTML builder ─────────────────────────────────────────────────────────────
+
+
+def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
+    views: list[dict[str, str]] = []
+    for idx, payload in enumerate(payloads):
+        spec_label = str(payload.get("subtitle") or payload.get("specName") or "Spec")
+        views.append({
+            "id": f"view-{idx}",
+            "y": str(payload.get("y", "")),
+            "x": str(payload.get("x", "")),
+            "spec": spec_label,
+            "title": str(payload.get("title", "")),
+            "srcdoc": _build_html(payload),
+        })
+    data_json = _json_for_html(views)
+    title = "Regression Monkey Interactive"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    :root {{
+      --ink: #111827;
+      --muted: #6B7280;
+      --line: #E5E7EB;
+      --line-2: #F3F4F6;
+      --bg: #FFFFFF;
+      --active: #7C3AED;
+      --mono: 'Courier New', Courier, monospace;
+      --sans: Arial, Helvetica, sans-serif;
+    }}
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; margin: 0; }}
+    body {{
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 12px;
+    }}
+    .bundle-toolbar {{
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+      font-family: var(--mono);
+      min-height: 44px;
+    }}
+    .bundle-brand {{
+      font-weight: 700;
+      font-size: 12px;
+      margin-right: 8px;
+      white-space: nowrap;
+    }}
+    .bundle-field {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }}
+    .bundle-field label {{
+      color: var(--muted);
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }}
+    .bundle-field select {{
+      height: 25px;
+      max-width: 310px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--line-2);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 2px 24px 2px 8px;
+    }}
+    .bundle-spacer {{ flex: 1; min-width: 8px; }}
+    .bundle-count {{
+      color: var(--muted);
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 10.5px;
+    }}
+    #rmFrame {{
+      flex: 1 1 auto;
+      width: 100%;
+      min-height: 0;
+      border: 0;
+      display: block;
+      background: #FFFFFF;
+    }}
+    @media (max-width: 860px) {{
+      .bundle-toolbar {{ align-items: flex-start; flex-wrap: wrap; }}
+      .bundle-spacer {{ display: none; }}
+      .bundle-field {{ flex: 1 1 100%; }}
+      .bundle-field select {{ flex: 1; max-width: none; }}
+    }}
+  </style>
+</head>
+<body>
+  <div class="bundle-toolbar">
+    <div class="bundle-brand">Regression Monkey</div>
+    <div class="bundle-field">
+      <label for="bundleY">Y</label>
+      <select id="bundleY"></select>
+    </div>
+    <div class="bundle-field">
+      <label for="bundleX">X</label>
+      <select id="bundleX"></select>
+    </div>
+    <div class="bundle-field">
+      <label for="bundleSpec">SPEC</label>
+      <select id="bundleSpec"></select>
+    </div>
+    <div class="bundle-spacer"></div>
+    <div id="bundleCount" class="bundle-count"></div>
+  </div>
+  <iframe id="rmFrame" title="Regression Monkey chart"></iframe>
+  <script>
+    const VIEWS = {data_json};
+    const ySel = document.getElementById("bundleY");
+    const xSel = document.getElementById("bundleX");
+    const specSel = document.getElementById("bundleSpec");
+    const frame = document.getElementById("rmFrame");
+    const count = document.getElementById("bundleCount");
+
+    function uniq(values) {{
+      return [...new Set(values.map(v => String(v)))];
+    }}
+
+    function option(value) {{
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = value || "(blank)";
+      return opt;
+    }}
+
+    function setOptions(select, values, preferred) {{
+      const old = preferred !== undefined ? preferred : select.value;
+      select.replaceChildren(...values.map(option));
+      if (values.includes(old)) select.value = old;
+      else if (values.length) select.value = values[0];
+    }}
+
+    function setSpecOptions(matches) {{
+      const old = specSel.value;
+      specSel.replaceChildren(...matches.map(v => {{
+        const opt = option(v.id);
+        opt.textContent = v.spec || "Spec";
+        return opt;
+      }}));
+      if (matches.some(v => v.id === old)) specSel.value = old;
+      else if (matches.length) specSel.value = matches[0].id;
+    }}
+
+    function filtered() {{
+      return VIEWS.filter(v => String(v.y) === ySel.value && String(v.x) === xSel.value);
+    }}
+
+    function renderSelectors(changed) {{
+      if (!VIEWS.length) return;
+      if (changed !== "y") setOptions(ySel, uniq(VIEWS.map(v => v.y)));
+      const xs = uniq(VIEWS.filter(v => String(v.y) === ySel.value).map(v => v.x));
+      if (changed !== "x") setOptions(xSel, xs);
+      setSpecOptions(filtered());
+      renderFrame();
+    }}
+
+    function renderFrame() {{
+      const matches = filtered();
+      const view = matches.find(v => v.id === specSel.value) || matches[0] || VIEWS[0];
+      if (!view) return;
+      ySel.value = String(view.y);
+      xSel.value = String(view.x);
+      specSel.value = view.id;
+      frame.srcdoc = view.srcdoc;
+      count.textContent = `${{VIEWS.indexOf(view) + 1}} / ${{VIEWS.length}}`;
+    }}
+
+    ySel.addEventListener("change", () => renderSelectors("y"));
+    xSel.addEventListener("change", () => renderSelectors("x"));
+    specSel.addEventListener("change", renderFrame);
+    renderSelectors();
+  </script>
+</body>
+</html>
+"""
 
 
 def _build_html(payload: dict[str, Any]) -> str:
@@ -400,6 +661,7 @@ def _build_html(payload: dict[str, Any]) -> str:
       --line:       #E5E7EB;
       --line-2:     #F3F4F6;
       --bg:         #FFFFFF;
+      --bg-2:       #F9FAFB;
       --active:     #7C3AED;
 
       --sig1:       #B91C1C;
@@ -418,6 +680,8 @@ def _build_html(payload: dict[str, Any]) -> str:
 
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 
+    html, body {{ height: 100%; }}
+
     body {{
       font-family: var(--sans);
       font-size: 13px;
@@ -425,6 +689,9 @@ def _build_html(payload: dict[str, Any]) -> str:
       background: var(--bg);
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
     }}
 
     /* ── Header ─────────────────────────────────────────── */
@@ -506,9 +773,8 @@ def _build_html(payload: dict[str, Any]) -> str:
       font-family: var(--mono);
       font-size: 10.5px;
       color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: pre-wrap;
+      word-break: break-word;
     }}
 
     .ctrl-group-title {{
@@ -519,7 +785,7 @@ def _build_html(payload: dict[str, Any]) -> str:
     .legend {{
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 10px;
       margin-top: 8px;
       flex-wrap: wrap;
     }}
@@ -578,11 +844,121 @@ def _build_html(payload: dict[str, Any]) -> str:
       border-radius: 2px;
     }}
 
+    .meta-row {{
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+
+    .rm-tools {{
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--muted);
+    }}
+
+    .rm-lbl {{
+      color: var(--muted-2);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-weight: 600;
+      font-size: 9.5px;
+    }}
+
+    .rm-seg {{
+      display: inline-flex;
+      background: var(--line-2);
+      border-radius: 5px;
+      padding: 2px;
+      gap: 2px;
+    }}
+
+    .rm-seg button {{
+      background: transparent;
+      border: 0;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 500;
+    }}
+
+    .rm-seg button.active {{
+      background: #FFFFFF;
+      color: var(--ink);
+      box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }}
+
+    .rm-chip {{
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 99px;
+      color: var(--muted-2);
+      background: #FFFFFF;
+      cursor: pointer;
+      user-select: none;
+      font-size: 10px;
+    }}
+
+    .rm-chip i {{
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      display: inline-block;
+    }}
+
+    .rm-chip.on {{
+      border-color: var(--ink);
+      color: var(--ink);
+      background: var(--bg);
+    }}
+
+    .rm-divider {{
+      width: 1px;
+      height: 14px;
+      background: var(--line);
+    }}
+
+    #chart g[data-spec] {{
+      transition: transform .35s cubic-bezier(.22,.7,.25,1);
+    }}
+
+    #chart g[data-spec].rm-dim > * {{
+      opacity: .13;
+      transition: opacity .2s;
+    }}
+
+    /* ── Layout ─────────────────────────────────────────── */
+    .main-body {{
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      overflow: hidden;
+    }}
+
+    .chart-col {{
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: auto;
+    }}
+
     /* ── Canvas ─────────────────────────────────────────── */
     .wrap {{
       padding: 18px 22px 36px;
-      overflow-x: auto;
-      overflow-y: hidden;
     }}
 
     svg {{
@@ -630,8 +1006,9 @@ def _build_html(payload: dict[str, Any]) -> str:
     }}
 
     .control-label-highlight {{
-      fill: #FDE68A;
-      opacity: .9;
+      fill: none;
+      stroke: #F59E0B;
+      stroke-width: 1;
     }}
 
     .grid-major {{
@@ -655,6 +1032,15 @@ def _build_html(payload: dict[str, Any]) -> str:
       stroke: #111827;
       stroke-width: .8;
       opacity: .78;
+    }}
+
+    .star-cell.active {{
+      fill: var(--active);
+    }}
+
+    .star-zero-segment.active {{
+      stroke: var(--active);
+      opacity: 1;
     }}
 
     /* CI bands — layered opacities create natural gradient */
@@ -728,7 +1114,7 @@ def _build_html(payload: dict[str, Any]) -> str:
     }}
 
     .obs-bar {{
-      fill: #9CA3AF;
+      fill: var(--obs-fill, #9CA3AF);
       opacity: .78;
     }}
 
@@ -739,50 +1125,39 @@ def _build_html(payload: dict[str, Any]) -> str:
 
     .hoverable {{ cursor: crosshair; }}
 
-    /* ── Tooltip ────────────────────────────────────────── */
-    #tooltip {{
-      position: fixed;
-      z-index: 500;
-      pointer-events: none;
-      min-width: 216px;
-      max-width: 400px;
-      padding: 11px 14px;
-      border-radius: var(--r-md);
-      background: #1C1C1E;
-      border: 1px solid rgba(255,255,255,.08);
-      box-shadow: var(--shadow-tt);
-      font-size: 11.5px;
-      line-height: 1.5;
-      color: #F9FAFB;
-      display: none;
-      opacity: 0;
-      transform: translateY(4px);
-      transition: opacity .15s ease, transform .15s ease;
+    /* ── Info panel ─────────────────────────────────────── */
+    .info-panel {{
+      width: 300px;
+      flex-shrink: 0;
+      border-left: 1px solid var(--line);
+      background: var(--bg);
+      overflow-y: auto;
     }}
 
-    #tooltip.visible {{
-      display: block;
-      opacity: 1;
-      transform: translateY(0);
+    .panel-placeholder {{
+      padding: 32px 16px;
+      color: var(--muted-2);
+      font-size: 11px;
+      text-align: center;
+      line-height: 1.7;
     }}
 
-    #tooltip .tt-head {{
+    .panel-head {{
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 7px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid rgba(255,255,255,.09);
+      padding: 10px 14px 8px;
+      border-bottom: 1px solid var(--line);
     }}
 
-    #tooltip .tt-title {{
+    .panel-title {{
       font-family: var(--mono);
       font-size: 11px;
       font-weight: 600;
-      color: #F9FAFB;
+      color: var(--ink);
     }}
 
-    #tooltip .tt-sig {{
+    .panel-sig {{
       display: inline-flex;
       align-items: center;
       padding: 1px 7px;
@@ -792,50 +1167,185 @@ def _build_html(payload: dict[str, Any]) -> str:
       letter-spacing: .01em;
     }}
 
-    #tooltip .tt-table {{
+    .panel-table {{
       display: grid;
       grid-template-columns: auto 1fr;
       gap: 2px 10px;
+      padding: 10px 14px;
     }}
 
-    #tooltip .tt-key {{
-      color: #6B7280;
+    .panel-key {{
+      color: var(--muted);
       font-size: 10.5px;
       align-self: center;
     }}
 
-    #tooltip .tt-val {{
+    .panel-val {{
       font-family: var(--mono);
       font-size: 10.5px;
-      color: #E5E7EB;
+      color: var(--ink-2);
       font-weight: 500;
       text-align: right;
     }}
 
-    #tooltip .tt-divider {{
+    .panel-divider {{
       grid-column: 1 / -1;
       height: 1px;
-      background: rgba(255,255,255,.07);
+      border-top: 1px dotted var(--line);
       margin: 4px 0;
     }}
 
-    #tooltip .tt-controls {{
+    .panel-controls {{
       grid-column: 1 / -1;
       margin-top: 2px;
-      color: #6B7280;
+      color: var(--muted);
       font-size: 10px;
       line-height: 1.45;
     }}
 
-    #tooltip .tt-controls em {{
+    .panel-controls em {{
       font-style: normal;
-      color: #D1D5DB;
+      color: var(--ink-2);
+    }}
+
+    /* ── Per-control coefficient list ─────────────────── */
+    .panel-coefs {{
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+      margin-top: 2px;
+    }}
+
+    .panel-coefs-head {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted-2);
+      font-weight: 600;
+      padding-bottom: 6px;
+      margin-bottom: 4px;
+    }}
+
+    .panel-coefs-meta {{
+      font-weight: 500;
+      opacity: .85;
+      letter-spacing: 0;
+      text-transform: none;
+    }}
+
+    .coef-group-label {{
+      font-family: var(--mono);
+      font-size: 8.5px;
+      color: var(--muted-2);
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      padding: 8px 14px 4px;
+      font-weight: 600;
+      border-top: 1px solid var(--line);
+      margin: 6px -14px 0;
+    }}
+
+    .coef-group-label .grp-count {{
+      color: var(--muted);
+      font-weight: 500;
+      letter-spacing: 0;
+    }}
+
+    .coef-row {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 68px 74px;
+      gap: 12px;
+      align-items: baseline;
+      padding: 4px;
+      border-radius: 3px;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.25;
+      transition: background .12s;
+    }}
+
+    .coef-row + .coef-row {{
+      border-top: 1px dotted var(--line);
+    }}
+
+    .coef-row:hover {{
+      background: var(--bg-2);
+    }}
+
+    .coef-row.is-test .coef-name {{
+      font-weight: 600;
+    }}
+
+    .coef-name {{
+      color: var(--ink);
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      letter-spacing: 0;
+    }}
+
+    .coef-val {{
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      font-size: 10.5px;
+      letter-spacing: 0;
+      min-width: 0;
+    }}
+
+    .coef-val.placeholder {{
+      color: var(--muted-2);
+    }}
+
+    .coef-val.pos {{
+      color: #B91C1C;
+    }}
+
+    .coef-val.neg {{
+      color: #1D4ED8;
+    }}
+
+    .coef-p {{
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9.5px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      justify-content: flex-end;
+      min-width: 0;
+      white-space: nowrap;
+    }}
+
+    .coef-p.placeholder {{
+      color: var(--muted-2);
+    }}
+
+    .coef-p .coef-stars {{
+      font-weight: 700;
+      letter-spacing: 0;
+      font-size: 11px;
+      color: var(--ink-2);
+    }}
+
+    .coef-empty {{
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted-2);
+      padding: 6px 4px;
+      font-style: italic;
     }}
 
     /* ── Print ──────────────────────────────────────────── */
     @media print {{
       header {{ position: static; border-bottom: 1px solid #ccc; }}
-      #tooltip {{ display: none !important; }}
+      .info-panel {{ display: none; }}
+      .chart-col {{ flex: 1; }}
     }}
   </style>
 </head>
@@ -852,52 +1362,49 @@ def _build_html(payload: dict[str, Any]) -> str:
   {f'<div class="subtitle">{controls_must_line}</div>' if controls_must_line else ""}
   {f'<div class="subtitle">{controls_test_line}</div>' if controls_test_line else ""}
   <div class="legend">
-    <!-- Significance dots -->
-    <div class="leg-grp">
-      <span class="leg-item">
-        <span class="leg-dot" style="background:var(--sig1)"></span>
-        p &lt; 0.01
-        <span class="leg-count">({n1})</span>
-      </span>
-      <span class="leg-item">
-        <span class="leg-dot" style="background:var(--sig5)"></span>
-        p &lt; 0.05
-        <span class="leg-count">({n5})</span>
-      </span>
-      <span class="leg-item">
-        <span class="leg-dot" style="background:var(--sig10)"></span>
-        p &lt; 0.10
-        <span class="leg-count">({n10})</span>
-      </span>
-      <span class="leg-item">
-        <span class="leg-dot" style="background:var(--nsig)"></span>
-        n.s.
-        <span class="leg-count">({n - n1 - n5 - n10})</span>
-      </span>
-    </div>
-
-    <span class="leg-sep"></span>
-
-    <!-- CI band swatch (3 nested divs simulate layering) -->
-    <span class="leg-ci">
-      <span class="leg-ci-band">
-        <span style="top:0;height:4px;background:#9CA3AF;opacity:.16"></span>
-        <span style="top:5px;height:4px;background:#6B7280;opacity:.22"></span>
-        <span style="top:10px;height:4px;background:#374151;opacity:.28"></span>
-      </span>
-      90 / 95 / 99% CI
+    <span class="badge" style="gap:8px;padding:3px 10px">
+      {n} specs
+      <span style="display:inline-block;width:1px;height:11px;background:var(--line);"></span>
+      <span class="leg-meta" style="font-weight:500;color:var(--muted)">{f"Elapsed = {float(elapsed):.2f}s" if elapsed is not None else "Elapsed = n/a"}</span>
     </span>
-    <span class="leg-sep"></span>
-    <span class="badge">{n} specs</span>
-    {f'<span class="leg-sep"></span>{elapsed_item}' if elapsed_item else ""}
+  </div>
+  <div class="meta-row">
+    <span class="leg-meta">@Lachryz</span>
+  </div>
+  <div class="rm-tools">
+    <span class="rm-lbl">Sort</span>
+    <div class="rm-seg" id="rmSort">
+      <button type="button" data-v="index" class="active">order</button>
+      <button type="button" data-v="p">|p|</button>
+      <button type="button" data-v="t">|t|</button>
+      <button type="button" data-v="coef">coef</button>
+      <button type="button" data-v="obs">obs</button>
+    </div>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">Significance</span>
+    <span class="rm-chip on" data-sig="3"><i style="background:#B91C1C"></i>p&lt;.01</span>
+    <span class="rm-chip on" data-sig="2"><i style="background:#15803D"></i>p&lt;.05</span>
+    <span class="rm-chip on" data-sig="1"><i style="background:#1D4ED8"></i>p&lt;.10</span>
+    <span class="rm-chip on" data-sig="0"><i style="background:#9CA3AF"></i>n.s.</span>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">CI bands</span>
+    <span class="rm-chip on" data-ci="90"><i style="background:#9CA3AF;opacity:.55"></i>90%</span>
+    <span class="rm-chip on" data-ci="95"><i style="background:#6B7280;opacity:.7"></i>95%</span>
+    <span class="rm-chip on" data-ci="99"><i style="background:#374151;opacity:.85"></i>99%</span>
   </div>
 </header>
 
-<div class="wrap" id="chart-wrap">
-  {svg_markup}
+<div class="main-body">
+  <div class="chart-col" id="chart-col">
+    <div class="wrap" id="chart-wrap">
+      {svg_markup}
+    </div>
+  </div>
+  <div class="info-panel" id="info-panel">
+    <div class="panel-placeholder" id="panel-placeholder">Hover or click<br>a specification</div>
+    <div id="panel-content" style="display:none"></div>
+  </div>
 </div>
-
-<div id="tooltip"></div>
 
 <script>
   const DATA       = {data_json};
@@ -906,18 +1413,17 @@ def _build_html(payload: dict[str, Any]) -> str:
   const SIG_LABEL  = {sig_labels_js};
   const records    = DATA.records;
 
-  const tooltip = document.getElementById("tooltip");
-  const chartWrap = document.getElementById("chart-wrap");
+  const panelPlaceholder = document.getElementById("panel-placeholder");
+  const panelContent     = document.getElementById("panel-content");
+  const chartCol = document.getElementById("chart-col");
   let activeIdx = null;
   let pinnedIdx = null;
-  let hideTimer = null;
 
   /* ── Activation ─────────────────────────────────────── */
-  function activate(idx, event, pin = false) {{
+  function activate(idx, pin = false) {{
     if (pinnedIdx !== null && !pin) return;
     if (idx === activeIdx) {{
       if (pin) pinnedIdx = idx;
-      moveTooltip(event);
       return;
     }}
     clearActive(false, true);
@@ -936,6 +1442,8 @@ def _build_html(payload: dict[str, Any]) -> str:
     if (pt && ring) {{
       ring.setAttribute("cx", pt.getAttribute("cx"));
       ring.setAttribute("cy", pt.getAttribute("cy"));
+      const specGroup = document.querySelector(`g[data-spec="${{idx}}"]`);
+      ring.setAttribute("transform", specGroup ? (specGroup.getAttribute("transform") || "") : "");
       ring.classList.add("visible");
     }}
 
@@ -944,36 +1452,62 @@ def _build_html(payload: dict[str, Any]) -> str:
         .forEach(el => el.classList.add("active"))
     );
 
-    /* tooltip content */
+    /* panel content */
     const star   = r.star;
+    const ci99   = `[${{fmt(r.ci99_lo)}}, ${{fmt(r.ci99_hi)}}]`;
     const ci90   = `[${{fmt(r.ci90_lo)}}, ${{fmt(r.ci90_hi)}}]`;
     const ci95   = `[${{fmt(r.ci95_lo)}}, ${{fmt(r.ci95_hi)}}]`;
-    const ctrlTxt = r.controls_all.length ? r.controls_all.join(", ") : "(none)";
+    const adjR2  = r.adj_r2 === null || r.adj_r2 === undefined ? "-" : Number(r.adj_r2).toFixed(4);
+    const includedControls = new Set(r.controls_all || []);
+    const testOrder = DATA.controlsTestNames || DATA.matrixControls || [];
+    const mustOrder = DATA.controlsMustNames || [];
+    const testIncl = testOrder.filter(c => includedControls.has(c));
+    const mustIncl = mustOrder.filter(c => includedControls.has(c));
+    const orderedKnown = new Set([...testIncl, ...mustIncl]);
+    const extraIncl = (r.controls_all || []).filter(c => !orderedKnown.has(c));
+    const controlStats = new Map((r.control_stats || []).map(item => [item.name, item]));
+    const coefRow = (name, group) => `
+      <div class="coef-row ${{group === "test" ? "is-test" : ""}}">
+        <span class="coef-name" title="${{escapeHtml(name)}}">${{escapeHtml(name)}}</span>
+        ${{controlStats.has(name)
+          ? `<span class="coef-val ${{Number(controlStats.get(name).coef) < 0 ? "neg" : "pos"}}">${{fmt(Number(controlStats.get(name).coef))}}</span>
+             <span class="coef-p s${{starLevel(Number(controlStats.get(name).p_value))}}"><span class="coef-stars">${{starsForP(Number(controlStats.get(name).p_value))}}</span><span>${{Number(controlStats.get(name).p_value).toFixed(4)}}</span></span>`
+          : `<span class="coef-val placeholder">-</span><span class="coef-p placeholder"><span class="coef-stars">.</span><span>-</span></span>`}}
+      </div>`;
+    const coefBlock = r.controls_all.length === 0
+      ? `<div class="coef-empty">No controls included in this specification.</div>`
+      : `
+        <div class="panel-coefs-head">
+          <span>Control coefficients</span>
+          <span class="panel-coefs-meta">${{testIncl.length}} test · ${{mustIncl.length + extraIncl.length}} must</span>
+        </div>
+        ${{testIncl.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}})</span></div>${{testIncl.map(c => coefRow(c, "test")).join("")}}` : ""}}
+        ${{mustIncl.length + extraIncl.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{mustIncl.length + extraIncl.length}})</span></div>${{[...mustIncl, ...extraIncl].map(c => coefRow(c, "base")).join("")}}` : ""}}
+      `;
 
-    tooltip.innerHTML = `
-      <div class="tt-head">
-        <span class="tt-title">Spec #${{idx + 1}}&thinsp;/&thinsp;${{records.length}}</span>
-        <span class="tt-sig" style="background:${{SIG_BG[star]}};color:${{SIG_COLOR[star]}}">${{SIG_LABEL[star]}}</span>
+    panelContent.innerHTML = `
+      <div class="panel-head">
+        <span class="panel-title">Spec #${{idx + 1}}&thinsp;/&thinsp;${{records.length}}</span>
+        <span class="panel-sig" style="background:${{SIG_BG[star]}};color:${{SIG_COLOR[star]}}">${{SIG_LABEL[star]}}</span>
       </div>
-      <div class="tt-table">
-        <span class="tt-key">coef</span>       <span class="tt-val">${{r.coef.toFixed(5)}}</span>
-        <span class="tt-key">std&nbsp;err</span><span class="tt-val">${{r.se.toFixed(5)}}</span>
-        <span class="tt-key">t&#8209;stat</span><span class="tt-val">${{r.t_value.toFixed(3)}}</span>
-        <span class="tt-key">p&#8209;value</span><span class="tt-val">${{r.p_value.toFixed(4)}}</span>
-        <div class="tt-divider"></div>
-        <span class="tt-key">90% CI</span>     <span class="tt-val">${{ci90}}</span>
-        <span class="tt-key">95% CI</span>     <span class="tt-val">${{ci95}}</span>
-        <div class="tt-divider"></div>
-        <span class="tt-key">obs</span>         <span class="tt-val">${{r.obs.toLocaleString()}}</span>
-        <div class="tt-divider"></div>
-        <div class="tt-controls">Controls: <em>${{ctrlTxt}}</em></div>
+      <div class="panel-table">
+        <span class="panel-key">coef</span>        <span class="panel-val">${{r.coef.toFixed(5)}}</span>
+        <span class="panel-key">std&nbsp;err</span> <span class="panel-val">${{r.se.toFixed(5)}}</span>
+        <span class="panel-key">t&#8209;stat</span> <span class="panel-val">${{r.t_value.toFixed(3)}}</span>
+        <span class="panel-key">p&#8209;value</span><span class="panel-val">${{r.p_value.toFixed(4)}}</span>
+        <div class="panel-divider"></div>
+        <span class="panel-key">90% CI</span>      <span class="panel-val">${{ci90}}</span>
+        <span class="panel-key">95% CI</span>      <span class="panel-val">${{ci95}}</span>
+        <span class="panel-key">99% CI</span>      <span class="panel-val">${{ci99}}</span>
+        <div class="panel-divider"></div>
+        <span class="panel-key">obs</span>          <span class="panel-val">${{r.obs.toLocaleString()}}</span>
+        <span class="panel-key">adj&nbsp;R²</span>  <span class="panel-val">${{adjR2}}</span>
+        <div class="panel-divider"></div>
+        <div class="panel-coefs">${{coefBlock}}</div>
       </div>`;
 
-    /* show tooltip */
-    clearTimeout(hideTimer);
-    tooltip.style.display = "block";
-    requestAnimationFrame(() => tooltip.classList.add("visible"));
-    moveTooltip(event);
+    panelPlaceholder.style.display = "none";
+    panelContent.style.display     = "block";
   }}
 
   function clearActive(hide = true, force = false) {{
@@ -982,15 +1516,14 @@ def _build_html(payload: dict[str, Any]) -> str:
     document.querySelectorAll(".special-line.hidden")
       .forEach(el => el.classList.remove("hidden"));
     const ring = document.getElementById("active-ring");
-    if (ring) ring.classList.remove("visible");
+    if (ring) {{
+      ring.classList.remove("visible");
+      ring.removeAttribute("transform");
+    }}
     activeIdx = null;
     pinnedIdx = null;
-    if (hide) {{
-      tooltip.classList.remove("visible");
-      hideTimer = setTimeout(() => {{
-        if (!tooltip.classList.contains("visible")) tooltip.style.display = "none";
-      }}, 180);
-    }}
+    panelContent.style.display     = "none";
+    panelPlaceholder.style.display = "";
   }}
 
   function togglePin(idx, event) {{
@@ -1000,32 +1533,37 @@ def _build_html(payload: dict[str, Any]) -> str:
       clearActive(true, true);
       return;
     }}
-    activate(idx, event, true);
-  }}
-
-  function handleMove(idx, event) {{
-    if (pinnedIdx === null || pinnedIdx === idx) moveTooltip(event);
-  }}
-
-  function moveTooltip(event) {{
-    if (!event) return;
-    const pad = 16, tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
-    const maxX = window.innerWidth  - tw - pad;
-    const maxY = window.innerHeight - th - pad;
-    tooltip.style.left = `${{Math.max(pad, Math.min(maxX, event.clientX + 18))}}px`;
-    tooltip.style.top  = `${{Math.max(pad, Math.min(maxY, event.clientY + 12))}}px`;
+    activate(idx, true);
   }}
 
   function fmt(v) {{ return v.toFixed(4); }}
 
+  function starLevel(p) {{
+    return p < 0.01 ? 3 : p < 0.05 ? 2 : p < 0.10 ? 1 : 0;
+  }}
+
+  function starsForP(p) {{
+    const level = starLevel(p);
+    return level === 0 ? "." : "*".repeat(level);
+  }}
+
+  function escapeHtml(value) {{
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }}
+
   function syncStickyLabels() {{
-    const x = chartWrap ? chartWrap.scrollLeft : 0;
+    const x = chartCol ? chartCol.scrollLeft : 0;
     document.querySelectorAll(".sticky-x")
       .forEach(el => el.setAttribute("transform", `translate(${{x}},0)`));
   }}
 
-  if (chartWrap) {{
-    chartWrap.addEventListener("scroll", syncStickyLabels, {{ passive: true }});
+  if (chartCol) {{
+    chartCol.addEventListener("scroll", syncStickyLabels, {{ passive: true }});
     syncStickyLabels();
   }}
 
@@ -1040,14 +1578,196 @@ def _build_html(payload: dict[str, Any]) -> str:
       const next = e.key === "ArrowRight"
         ? Math.min(cur + 1, n - 1)
         : Math.max(cur - 1, 0);
-      const cx = window.innerWidth  / 2;
-      const cy = window.innerHeight / 2;
       pinnedIdx = null;
-      activate(next, {{ clientX: cx, clientY: cy }});
+      activate(next);
     }}
 
     if (e.key === "Escape") clearActive(true, true);
   }});
+
+  /* ── Header options ─────────────────────────────────── */
+  (function initHeaderOptions() {{
+    const svg = document.getElementById("chart");
+    if (!svg || !records.length) return;
+
+    const left = Number(svg.dataset.left || 0);
+    const right = Number(svg.dataset.right || 0);
+    const xStep = Number(svg.dataset.xStep || 7);
+    const firstX = left + xStep * 0.5;
+    const plotRight = Number(svg.dataset.plotRight || (Number(svg.getAttribute("width")) - right));
+    const starY = Number(svg.dataset.starY || 20);
+    const starBottom = Number(svg.dataset.starBottom || 86);
+    const coefY = Number(svg.dataset.coefY || 98);
+    const coefBottom = Number(svg.dataset.coefBottom || 394);
+    const matrixY = Number(svg.dataset.matrixY || 406);
+    const matrixBottom = Number(svg.dataset.matrixBottom || 622);
+    const obsY = Number(svg.dataset.obsY || 646);
+    const obsBottom = Number(svg.dataset.obsBottom || 734);
+
+    const byIdx = {{}};
+    svg.querySelectorAll("[data-index]").forEach(el => {{
+      const idx = el.getAttribute("data-index");
+      (byIdx[idx] = byIdx[idx] || []).push(el);
+    }});
+
+    Object.keys(byIdx).forEach(idx => {{
+      const els = byIdx[idx];
+      if (!els.length || els[0].closest("g[data-spec]")) return;
+      const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      group.setAttribute("data-spec", idx);
+      els[0].parentNode.insertBefore(group, els[0]);
+      els.forEach(el => group.appendChild(el));
+    }});
+
+    const origCol = {{}};
+    records.forEach((r, pos) => {{ origCol[r.index] = pos; }});
+
+    const anchors = [];
+    records.forEach(r => {{
+      const pt = svg.querySelector(`.point[data-index="${{r.index}}"]`);
+      if (pt) anchors.push({{ coef: Number(r.coef), y: Number(pt.getAttribute("cy")) }});
+    }});
+    let yCoef = v => coefY + (coefBottom - coefY) / 2;
+    for (let i = 0; i < anchors.length; i++) {{
+      for (let j = i + 1; j < anchors.length; j++) {{
+        if (Math.abs(anchors[j].coef - anchors[i].coef) < 1e-12) continue;
+        const slope = (anchors[j].y - anchors[i].y) / (anchors[j].coef - anchors[i].coef);
+        const intercept = anchors[i].y - slope * anchors[i].coef;
+        yCoef = v => slope * v + intercept;
+        i = anchors.length;
+        break;
+      }}
+    }}
+
+    const state = {{
+      sort: "index",
+      sigFilter: new Set([0, 1, 2, 3]),
+    }};
+
+    function sortedRecords() {{
+      const arr = records.slice();
+      if (state.sort === "coef") arr.sort((a, b) => a.coef - b.coef);
+      else if (state.sort === "t") arr.sort((a, b) => Math.abs(b.t_value) - Math.abs(a.t_value));
+      else if (state.sort === "p") {{
+        arr.sort((a, b) => {{
+          const signA = a.coef < 0 ? -1 : 1;
+          const signB = b.coef < 0 ? -1 : 1;
+          const scoreA = signA * Math.log10(Math.max(a.p_value, Number.MIN_VALUE));
+          const scoreB = signB * Math.log10(Math.max(b.p_value, Number.MIN_VALUE));
+          return scoreA - scoreB;
+        }});
+      }} else if (state.sort === "obs") arr.sort((a, b) => b.obs - a.obs);
+      else arr.sort((a, b) => a.index - b.index);
+      return arr;
+    }}
+
+    function isDimmed(record) {{
+      if (!state.sigFilter.has(record.star)) return true;
+      return false;
+    }}
+
+    function ciPath(arr, loKey, hiKey, colW) {{
+      if (!arr.length) return "";
+      const upper = arr.map((r, pos) => {{
+        const x = firstX + pos * colW;
+        return `${{pos ? "L" : "M"}} ${{x.toFixed(3)}} ${{yCoef(r[hiKey]).toFixed(3)}}`;
+      }});
+      const lower = [];
+      for (let pos = arr.length - 1; pos >= 0; pos--) {{
+        const x = firstX + pos * colW;
+        lower.push(`L ${{x.toFixed(3)}} ${{yCoef(arr[pos][loKey]).toFixed(3)}}`);
+      }}
+      return [...upper, ...lower, "Z"].join(" ");
+    }}
+
+    function updateSpecialLines(arr, colW) {{
+      svg.querySelectorAll(".special-line").forEach(line => {{
+        const idx = Number(line.getAttribute("data-special-index"));
+        const pos = arr.findIndex(r => Number(r.index) === idx);
+        if (pos < 0) return;
+        const x = firstX + pos * colW;
+        const r = records[idx];
+        if (!r) return;
+        const cy = yCoef(Number(r.coef));
+        const gap = 4.8;
+        const d = [
+          `M ${{x.toFixed(3)}} ${{starY}} L ${{x.toFixed(3)}} ${{starBottom}}`,
+          `M ${{x.toFixed(3)}} ${{coefY}} L ${{x.toFixed(3)}} ${{Math.max(coefY, cy - gap).toFixed(3)}}`,
+          `M ${{x.toFixed(3)}} ${{Math.min(coefBottom, cy + gap).toFixed(3)}} L ${{x.toFixed(3)}} ${{coefBottom}}`,
+          `M ${{x.toFixed(3)}} ${{matrixY}} L ${{x.toFixed(3)}} ${{matrixBottom}}`,
+          `M ${{x.toFixed(3)}} ${{obsY}} L ${{x.toFixed(3)}} ${{obsBottom}}`,
+        ].join(" ");
+        line.setAttribute("d", d);
+      }});
+    }}
+
+    function renderHeaderOptions() {{
+      const arr = sortedRecords();
+      const colW = xStep;
+
+      arr.forEach((record, newPos) => {{
+        const group = svg.querySelector(`g[data-spec="${{record.index}}"]`);
+        if (!group) return;
+        const oldX = firstX + (origCol[record.index] || 0) * xStep;
+        const newX = firstX + newPos * colW;
+        const scaleX = colW / xStep;
+        const dx = newX - oldX * scaleX;
+        group.setAttribute("transform", `translate(${{dx.toFixed(3)}},0) scale(${{scaleX.toFixed(5)}},1)`);
+        group.classList.toggle("rm-dim", isDimmed(record));
+      }});
+
+      [["ci99", "ci99_lo", "ci99_hi"], ["ci95", "ci95_lo", "ci95_hi"], ["ci90", "ci90_lo", "ci90_hi"]]
+        .forEach(([cls, loKey, hiKey]) => {{
+          const path = svg.querySelector(`path.${{cls}}`);
+          if (path) path.setAttribute("d", ciPath(arr, loKey, hiKey, colW));
+        }});
+
+      updateSpecialLines(arr, colW);
+      if (activeIdx !== null) {{
+        const group = svg.querySelector(`g[data-spec="${{activeIdx}}"]`);
+        const ring = document.getElementById("active-ring");
+        if (ring) ring.setAttribute("transform", group ? (group.getAttribute("transform") || "") : "");
+      }}
+      syncStickyLabels();
+    }}
+
+    const sortEl = document.getElementById("rmSort");
+    if (sortEl) {{
+      sortEl.addEventListener("click", event => {{
+        const button = event.target.closest("button");
+        if (!button) return;
+        sortEl.querySelectorAll("button").forEach(item => item.classList.toggle("active", item === button));
+        state.sort = button.dataset.v || "index";
+        renderHeaderOptions();
+      }});
+    }}
+
+    document.querySelectorAll(".rm-chip[data-sig]").forEach(chip => {{
+      chip.addEventListener("click", () => {{
+        const star = Number(chip.dataset.sig);
+        if (state.sigFilter.has(star)) {{
+          if (state.sigFilter.size <= 1) return;
+          state.sigFilter.delete(star);
+        }} else {{
+          state.sigFilter.add(star);
+        }}
+        chip.classList.toggle("on", state.sigFilter.has(star));
+        renderHeaderOptions();
+      }});
+    }});
+
+    document.querySelectorAll(".rm-chip[data-ci]").forEach(chip => {{
+      chip.addEventListener("click", () => {{
+        const ci = chip.dataset.ci;
+        const enabled = !chip.classList.contains("on");
+        chip.classList.toggle("on", enabled);
+        const path = svg.querySelector(`path.ci${{ci}}`);
+        if (path) path.style.display = enabled ? "" : "none";
+      }});
+    }});
+
+    renderHeaderOptions();
+  }})();
 </script>
 </body>
 </html>
@@ -1218,12 +1938,18 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         f' aria-label="{html.escape(str(payload["title"]), quote=True)}"'
         f' width="{width}" height="{height}"'
         f' viewBox="0 0 {width} {height}"'
+        f' data-left="{_fmt(left)}" data-right="{_fmt(right)}"'
+        f' data-x-step="{_fmt(x_step)}" data-plot-right="{_fmt(width - right)}"'
+        f' data-star-y="{_fmt(star_y)}" data-star-bottom="{_fmt(star_y + star_h)}"'
+        f' data-coef-y="{_fmt(coef_y)}" data-coef-bottom="{_fmt(coef_y + coef_h)}"'
+        f' data-matrix-y="{_fmt(matrix_y)}" data-matrix-bottom="{_fmt(matrix_y + matrix_h)}"'
+        f' data-obs-y="{_fmt(obs_y)}" data-obs-bottom="{_fmt(obs_y + obs_h)}"'
         f' xmlns="http://www.w3.org/2000/svg">'
     )
 
     # ── Panel rects ───────────────────────────────────────
     panels = [
-        (star_y, star_h, "STAR"),
+        (star_y, star_h, "STARS"),
         (coef_y, coef_h, "COEF"),
         (matrix_y, matrix_h, "CONTROLS"),
         (obs_y, obs_h, "OBS"),
@@ -1409,12 +2135,12 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         group_label_fill = alt_group_color_by_control.get(str(name))
         label_text = str(name)
         if name in starred_controls:
-            highlight_w = max(32, len(label_text) * 6.2 + 9)
+            highlight_w = max(26, len(label_text) * 6.2 + 6)
             p.append(
                 _tag(
                     "rect",
                     {
-                        "x": _fmt(label_x - highlight_w - 3),
+                        "x": _fmt(label_x - highlight_w + 3),
                         "y": _fmt(ry + 3),
                         "width": _fmt(highlight_w),
                         "height": _fmt(row_h - 5),
@@ -1517,13 +2243,44 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         for idx in range(start, end):
             matrix_cell_fill[(row, idx)] = fill
 
+    # ── Swimlane backgrounds for alt groups ───────────────
+    for grp in alt_groups:
+        s = int(grp.get("start", -1))
+        e = int(grp.get("end", -1))
+        if s < 0 or e <= s or e >= len(controls):
+            continue
+        grp_color = alt_group_color_by_control.get(str(controls[s]), _ALT_GROUP_COLORS[0])
+        ry0 = matrix_y + s * row_h
+        p.append(
+            _tag(
+                "rect",
+                {
+                    "x": _fmt(left),
+                    "y": _fmt(ry0),
+                    "width": _fmt(width - left - right),
+                    "height": _fmt((e - s + 1) * row_h),
+                    "fill": grp_color,
+                    "opacity": "0.12",
+                    "pointer-events": "none",
+                },
+            )
+        )
+
     # ── Per-record elements ────────────────────────────────
     for idx, rec in enumerate(records):
         x = xc(idx)
         star = int(rec["star"])
         coef = float(rec["coef"])
         color = rec["color"]
-        star_fill = _STAR_NEG if coef < 0 else _STAR_POS
+        _show_sp_star = payload.get("showSpecialMarkers", True)
+        _is_full_star = _show_sp_star and bool(rec.get("is_full", False))
+        _is_noc_star = _show_sp_star and bool(rec.get("is_no_controls_test", False))
+        star_fill = (
+            "#FF2F92" if _is_full_star
+            else "#ff8c00" if _is_noc_star
+            else (_STAR_NEG if coef < 0 else _STAR_POS)
+        )
+        star_zero_stroke = "#FF2F92" if _is_full_star else "#ff8c00" if _is_noc_star else "#D1D5DB"
         dirn = -1 if coef < 0 else 1
 
         # Star block
@@ -1536,8 +2293,9 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                         "x2": _fmt(x + x_step * 0.36),
                         "y1": _fmt(sy(0)),
                         "y2": _fmt(sy(0)),
-                        "stroke": "#D1D5DB",
+                        "stroke": star_zero_stroke,
                         "stroke-width": "0.9",
+                        "class": "star-zero-segment",
                         "data-index": idx,
                     },
                 )
@@ -1584,12 +2342,11 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
             ry = matrix_y + matrix_pad + row * row_h
             normal_fill = matrix_cell_fill.get((row, idx), "#1F2937")
             group_fill = alt_group_color_by_control.get(str(name))
-            display_fill = group_fill or normal_fill
-            cell_class = "matrix-cell"
-            if group_fill:
-                cell_class += " group-control-cell"
-            if bool(rec.get("is_full", False)):
-                cell_class += " full-control-cell"
+            cell_fill = (
+                "#FF2F92" if _is_full_star
+                else "#ff8c00" if _is_noc_star
+                else normal_fill
+            )
             p.append(
                 _tag(
                     "rect",
@@ -1599,9 +2356,9 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                         "width": max(1, x_step * 0.80),
                         "height": row_h - 4,
                         "rx": "1.5",
-                        "fill": display_fill,
+                        "fill": cell_fill,
                         "style": f"--normal-fill: {normal_fill}; --group-fill: {group_fill or normal_fill}",
-                        "class": cell_class,
+                        "class": "matrix-cell",
                         "data-index": idx,
                         "data-control": name,
                     },
@@ -1614,6 +2371,11 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         obs_value_y = oy(float(obs_value))
         obs_gap = 2.0
         obs_min_h = 0.7
+        _show_sp = payload.get("showSpecialMarkers", True)
+        _is_full_bar = _show_sp and bool(rec.get("is_full", False))
+        _is_noc_bar = _show_sp and bool(rec.get("is_no_controls_test", False))
+        obs_bar_fill = "#FF2F92" if _is_full_bar else "#ff8c00" if _is_noc_bar else _OBS_FILL
+        obs_bar_opacity = "1" if (_is_full_bar or _is_noc_bar) else ""
         if obs_value_y < obs_base_y:
             obs_bar_bottom = obs_base_y - obs_gap
             obs_bar_y = min(obs_value_y, obs_bar_bottom - obs_min_h)
@@ -1633,7 +2395,7 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                     "y": _fmt(obs_bar_y),
                     "width": max(1, x_step * 0.76),
                     "height": _fmt(obs_bar_h),
-                    "fill": _OBS_FILL,
+                    "style": f"--obs-fill: {obs_bar_fill}" + (f"; opacity: {obs_bar_opacity}" if obs_bar_opacity else ""),
                     "rx": "1.5",
                     "class": "obs-bar",
                     "data-obs-gap": _fmt(obs_gap),
@@ -1667,8 +2429,7 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                     "fill": "transparent",
                     "class": "hoverable",
                     "data-index": idx,
-                    "onmouseenter": f"activate({idx},event)",
-                    "onmousemove": f"handleMove({idx},event)",
+                    "onmouseenter": f"activate({idx})",
                     "onmouseleave": "clearActive()",
                     "onclick": f"togglePin({idx},event)",
                 },

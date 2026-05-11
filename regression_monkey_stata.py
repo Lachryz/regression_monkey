@@ -208,6 +208,31 @@ def _control_spec_count(
     return rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
 
 
+def _append_control_stats_lines(lines: list[str], chosen_controls: list[str], *, indent: str = "    ") -> None:
+    if not chosen_controls:
+        lines.append(f'{indent}local __ctrl_stats ""')
+        return
+    controls_macro = " ".join(chosen_controls)
+    lines.extend([
+        f'{indent}local __rm_controls "{controls_macro}"',
+        f'{indent}local __ctrl_stats ""',
+        f'{indent}local __ctrl_sep ""',
+        f'{indent}foreach __rm_c of local __rm_controls {{',
+        f'{indent}    capture scalar __ctrl_b = _b[`__rm_c\']',
+        f'{indent}    if _rc == 0 {{',
+        f'{indent}        capture scalar __ctrl_se = _se[`__rm_c\']',
+        f'{indent}        if _rc == 0 & __ctrl_se < . & __ctrl_se != 0 {{',
+        f'{indent}            scalar __ctrl_t = __ctrl_b / __ctrl_se',
+        f'{indent}            scalar __ctrl_p = 2 * ttail(e(df_r), abs(__ctrl_t))',
+        f'{indent}            local __ctrl_piece = "`__rm_c\'=" + string(__ctrl_b, "%21.15g") + "," + string(__ctrl_se, "%21.15g") + "," + string(__ctrl_t, "%21.15g") + "," + string(__ctrl_p, "%21.15g")',
+        f'{indent}            local __ctrl_stats "`__ctrl_stats\'`__ctrl_sep\'`__ctrl_piece\'"',
+        f'{indent}            local __ctrl_sep ";"',
+        f'{indent}        }}',
+        f'{indent}    }}',
+        f'{indent}}}',
+    ])
+
+
 def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
     output_dir = run_output_dir / _safe_path_part(group_name)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -254,7 +279,7 @@ def _write_reghdfe_do(
     lines.extend([
         f"use {_stata_quote(str(data_path))}, clear",
         f"tempname posth",
-        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
+        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid double adj_r2 str2045 control_stats using {_stata_quote(str(results_dta))} , replace',
     ])
 
     for bits, chosen_must, chosen_test, _is_full in subsets:
@@ -278,7 +303,11 @@ def _write_reghdfe_do(
                 f"    scalar __se = _se[{x}]",
                 "    scalar __N = e(N)",
                 "    scalar __df = e(df_r)",
-                f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df)',
+                "    scalar __adj_r2 = e(r2_a)",
+            ])
+            _append_control_stats_lines(lines, chosen_must + chosen_test)
+            lines.extend([
+                f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df) (__adj_r2) ("`__ctrl_stats\'")',
                 "}",
             ])
         else:
@@ -305,7 +334,11 @@ def _write_reghdfe_do(
                 f"            scalar __se = _se[{x}]",
                 "            scalar __N = e(N)",
                 "            scalar __df = e(df_r)",
-                f'            post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ({group_name_literal}) (`__rm_g\') (__b) (__se) (__N) (__df)',
+                "            scalar __adj_r2 = e(r2_a)",
+            ])
+            _append_control_stats_lines(lines, chosen_must + chosen_test, indent="            ")
+            lines.extend([
+                f'            post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ({group_name_literal}) (`__rm_g\') (__b) (__se) (__N) (__df) (__adj_r2) ("`__ctrl_stats\'")',
                 "        }",
                 "    }",
                 f"    drop {b_group}",
@@ -350,7 +383,7 @@ def _write_interaction_reghdfe_do(
         "}",
         f"use {_stata_quote(str(data_path))}, clear",
         "tempname posth",
-        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid using {_stata_quote(str(results_dta))} , replace',
+        f'postfile `posth\' str128 spec_name long bits str2045 chosen_must_controls str2045 chosen_test_controls str128 grouping_variable double group_value double coef double se double obs double df_resid double adj_r2 str2045 control_stats using {_stata_quote(str(results_dta))} , replace',
     ]
     for bits, chosen_must, chosen_test, _is_full in subsets:
         rhs_terms = [x]
@@ -368,7 +401,11 @@ def _write_interaction_reghdfe_do(
             f"    scalar __se = _se[{interaction_term}]",
             "    scalar __N = e(N)",
             "    scalar __df = e(df_r)",
-            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df)',
+            "    scalar __adj_r2 = e(r2_a)",
+        ])
+        _append_control_stats_lines(lines, chosen_must + chosen_test)
+        lines.extend([
+            f'    post `posth\' ({_stata_quote(spec_name)}) ({bits}) ({_stata_quote(chosen_must_txt)}) ({_stata_quote(chosen_test_txt)}) ("") (.) (__b) (__se) (__N) (__df) (__adj_r2) ("`__ctrl_stats\'")',
             "}",
         ])
     lines.extend([
@@ -472,6 +509,34 @@ def _raise_empty_stata_records(
     )
 
 
+def _parse_stata_control_stats(value: Any) -> list[dict[str, Any]]:
+    if value is None or pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    stats: list[dict[str, Any]] = []
+    for piece in text.split(";"):
+        if not piece or "=" not in piece:
+            continue
+        name, raw_values = piece.split("=", 1)
+        parts = raw_values.split(",")
+        if len(parts) != 4:
+            continue
+        try:
+            coef, se, t_value, p_value = (float(part) for part in parts)
+        except ValueError:
+            continue
+        stats.append({
+            "name": name,
+            "coef": coef,
+            "se": se,
+            "t_value": t_value,
+            "p_value": p_value,
+        })
+    return stats
+
+
 def _records_from_stata_dta(
     dta_path: pathlib.Path,
     controls_must_slots: list[rm.ControlSlot],
@@ -492,12 +557,14 @@ def _records_from_stata_dta(
         _, _, is_full = rm._decode_optional_choice(rem_bits, controls_test_slots)
         t_value = coef / se
         p_value = rm._p_value_from_t(abs(t_value), df_resid)
+        adj_r2 = float(row["adj_r2"]) if "adj_r2" in row.index and not pd.isna(row["adj_r2"]) else float("nan")
         crit99, crit95, crit90 = rm._crit_values(df_resid)
         records.append({
             "coef": coef,
             "se": se,
             "t_value": t_value,
             "p_value": p_value,
+            "adj_r2": adj_r2,
             "df_resid": df_resid,
             "ci99_lo": coef - crit99 * se,
             "ci99_hi": coef + crit99 * se,
@@ -507,6 +574,7 @@ def _records_from_stata_dta(
             "ci90_hi": coef + crit90 * se,
             "controls_test": chosen_test_set,
             "controls_all": chosen_all_set,
+            "control_stats": _parse_stata_control_stats(row.get("control_stats")),
             "is_full": is_full,
             "obs": obs,
         })

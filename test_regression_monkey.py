@@ -287,10 +287,15 @@ class TestNormalizeControls:
         )
         text = do_path.read_text(encoding="utf-8")
         assert "gen byte `__rm_esample' = e(sample)" in text
+        assert "double adj_r2" in text
+        assert "scalar __adj_r2 = e(r2_a)" in text
         assert "keep if `__rm_esample'" in text
         assert "bysort industry year (firm_id): quantiles sue, gen(_temp) n(2) stable" in text
         assert "gen byte b_sue = _temp - 1" in text
         assert "capture reghdfe outcome treatment ctrl_c if b_sue == `__rm_g'" in text
+        assert "str2045 control_stats" in text
+        assert 'local __rm_controls "ctrl_c"' in text
+        assert "scalar __ctrl_p = 2 * ttail(e(df_r), abs(__ctrl_t))" in text
         assert "drop b_sue" in text
 
     def test_stata_grouping_do_supports_time_and_none_scopes(self, tmp_path: pathlib.Path) -> None:
@@ -344,6 +349,17 @@ class TestNormalizeControls:
         assert "capture reghdfe outcome treatment ctrl_c c.treatment#c.sue, absorb(i.firm_id i.year) vce(cluster firm_id)" in text
         assert "scalar __b = _b[c.treatment#c.sue]" in text
         assert "scalar __se = _se[c.treatment#c.sue]" in text
+        assert "str2045 control_stats" in text
+        assert 'local __rm_controls "ctrl_c"' in text
+
+    def test_parse_stata_control_stats(self) -> None:
+        stats = rm_stata._parse_stata_control_stats(
+            "ctrl_c=0.123456,.01,12.3456,.0001;ctrl_a=-.25,.1,-2.5,.0123"
+        )
+        assert stats == [
+            {"name": "ctrl_c", "coef": 0.123456, "se": 0.01, "t_value": 12.3456, "p_value": 0.0001},
+            {"name": "ctrl_a", "coef": -0.25, "se": 0.1, "t_value": -2.5, "p_value": 0.0123},
+        ]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -382,7 +398,7 @@ class TestSpecCount:
         assert msg == "[本图回归数] 3,000 个回归"
 
     def test_p_mode_sort_splits_negative_and_positive_coefficients(self) -> None:
-        """order=p：负系数在左侧按 p 从大到小，正系数在右侧按 p 从小到大。"""
+        """order=p：负系数在左侧按 p 从小到大（最显著在最左），正系数在右侧按 p 从大到小（最显著在最右）。"""
         def rec(coef: float, p_value: float) -> rm_py.SpecRecord:
             return {
                 "coef": coef,
@@ -411,18 +427,18 @@ class TestSpecCount:
         ]
         sorted_records = rm_py._sort_records_for_plot(records, sort_by_signed_p=True)
         assert [(r["coef"], r["p_value"]) for r in sorted_records] == [
-            (-1.0, 0.10),
             (-2.0, 0.01),
-            (9.0, 0.001),
-            (2.0, 0.02),
+            (-1.0, 0.10),
             (1.0, 0.05),
+            (2.0, 0.02),
+            (9.0, 0.001),
         ]
         signs = [float(r["coef"]) < 0 for r in sorted_records]
         assert signs == [True, True, False, False, False]
         neg_p = [float(r["p_value"]) for r in sorted_records if float(r["coef"]) < 0]
         pos_p = [float(r["p_value"]) for r in sorted_records if float(r["coef"]) >= 0]
-        assert neg_p == sorted(neg_p, reverse=True)
-        assert pos_p == sorted(pos_p)
+        assert neg_p == sorted(neg_p)
+        assert pos_p == sorted(pos_p, reverse=True)
 
     def test_plot_order_normalization(self) -> None:
         """order 参数和 --p 兼容别名解析正确。"""
@@ -482,6 +498,10 @@ class TestEndToEndPython:
     ) -> None:
         """write_analysis_artifacts 写出 CSV，records_from_dataframe 还原结果无精度损失。"""
         records = self._run(synthetic_df, ["ctrl_a"], ["ctrl_c"])
+        records[0]["control_stats"] = [
+            {"name": "ctrl_c", "coef": 0.123456, "se": 0.01, "t_value": 12.3456, "p_value": 0.0001},
+            {"name": "ctrl_a", "coef": -0.25, "se": 0.10, "t_value": -2.5, "p_value": 0.0123},
+        ]
 
         results_csv = tmp_path / "results.csv"
         meta_json = tmp_path / "meta.json"
@@ -507,18 +527,26 @@ class TestEndToEndPython:
 
         assert results_csv.exists()
         assert meta_json.exists()
+        assert "control_stats" in pd.read_csv(results_csv).columns
 
         loaded = rm_py.records_from_dataframe(pd.read_csv(results_csv))
         assert len(loaded) == len(records)
         for orig, back in zip(records, loaded):
             assert abs(orig["coef"] - back["coef"]) < 1e-9
             assert abs(orig["se"] - back["se"]) < 1e-9
+            assert "adj_r2" in back
+        assert loaded[0]["control_stats"][0]["name"] == "ctrl_c"
+        assert abs(loaded[0]["control_stats"][1]["p_value"] - 0.0123) < 1e-12
 
     def test_html_from_files_writes_interactive_document(
         self, synthetic_df: pd.DataFrame, tmp_path: pathlib.Path
     ) -> None:
         """HTML 渲染脚本读取标准 handoff 文件，并写出悬停交互所需结构。"""
         records = self._run(synthetic_df, ["ctrl_a"], ["ctrl_c"])
+        records[0]["control_stats"] = [
+            {"name": "ctrl_c", "coef": 0.123456, "se": 0.01, "t_value": 12.3456, "p_value": 0.0001},
+            {"name": "ctrl_a", "coef": -0.25, "se": 0.10, "t_value": -2.5, "p_value": 0.0123},
+        ]
         results_csv = tmp_path / "results.csv"
         meta_json = tmp_path / "meta.json"
         output_html = tmp_path / "out.html"
@@ -563,6 +591,13 @@ class TestEndToEndPython:
         assert "mouseenter" in html_text
         assert "togglePin" in html_text
         assert "pinnedIdx" in html_text
+        assert 'id="rmSort"' in html_text
+        assert 'data-ci="90"' in html_text
+        assert 'id="rmSearch"' not in html_text
+        assert 'id="rmDens"' not in html_text
+        assert "rm-search" not in html_text
+        assert "dens-compact" not in html_text
+        assert "initHeaderOptions" in html_text
         assert "onclick" in html_text
         assert '<circle cx="' in html_text
         assert "overflow-x: auto" in html_text
@@ -579,11 +614,27 @@ class TestEndToEndPython:
         assert "controls_must = ctrl_c" in html_text
         assert "controls_test = ctrl_a" in html_text
         assert "star-zero-line" in html_text
+        assert "star-cell.active" in html_text
+        assert "star-zero-segment.active" in html_text
+        assert "STARS" in html_text
+        assert ">STAR<" not in html_text
         assert 'transform="rotate(90' in html_text
         assert 'class="obs-bar"' in html_text
         assert 'rx="1.5"' in html_text
         assert 'data-obs-gap="2"' in html_text
         assert "baseline specification" not in html_text
+        assert '"control_stats":' in html_text
+        assert '"name": "ctrl_c"' in html_text
+        assert '"p_value": 0.0123' in html_text
+        assert '"adj_r2":' in html_text
+        assert "adj&nbsp;R²" in html_text
+        assert "99% CI" in html_text
+        assert "starsForP" in html_text
+        assert '"controlsMustNames": ["ctrl_c"]' in html_text
+        assert '<div class="coef-group-label">TEST <span class="grp-count">(${testIncl.length})</span></div>' in html_text
+        assert '<div class="coef-group-label">MUST <span class="grp-count">(${mustIncl.length + extraIncl.length})</span></div>' in html_text
+        assert "Test · varied" not in html_text
+        assert "Baseline <span" not in html_text
 
     def test_html_highlights_control_present_in_all_three_star_specs(self) -> None:
         """所有 3 星显著规格都包含某个 controls_test 时，控制变量名加黄色底纹。"""
@@ -625,7 +676,7 @@ class TestEndToEndPython:
         assert "☆ ctrl_a" not in html_text
         assert "ctrl_a" in html_text
         assert "control-label-highlight sticky-x" in html_text
-        assert "#FDE68A" in html_text
+        assert "#F59E0B" in html_text
 
     def test_html_colors_controls_test_alt_groups(self) -> None:
         """controls_test 的多变量子 list 使用同一组深色。"""
@@ -669,17 +720,70 @@ class TestEndToEndPython:
         }
 
         html_text = rm_html._build_html(payload)
-        assert "group-control-cell" in html_text
-        assert "group-control-cell full-control-cell" in html_text
+        # 格子仅使用 matrix-cell，不再附加 group/full 色类
+        assert "matrix-cell" in html_text
+        assert "group-control-cell" not in html_text or html_text.count("group-control-cell") == html_text.count(".matrix-cell.group-control-cell")
+        # CSS 变量仍然存在（供 JS hover 使用）
         assert "--group-fill: #0B3A75" in html_text
         assert html_text.count("--group-fill: #0B3A75") == 4
         assert '<span class="ctrl-group-title" style="color:#0B3A75">[ctrl_b, ctrl_c]</span>' in html_text
         assert 'data-control="ctrl_b"' in html_text
         assert '--control-label-fill: #0B3A75' in html_text
-        assert html_text.index(".matrix-cell.group-control-cell") < html_text.index(".matrix-cell.full-control-cell")
+        # 泳道背景色已出现在 SVG 中
+        assert 'opacity="0.12"' in html_text
 
-    def test_html_payload_p_order_sorts_negative_p_descending(self) -> None:
-        """HTML payload 标记 p 模式时，也按新 p 排序重排嵌入 records。"""
+    def test_html_bundle_adds_y_x_spec_switcher(self) -> None:
+        """总 HTML 在原图表选项栏上方增加 Y/X/SPEC 切换栏。"""
+        def payload(y: str, x: str, spec: str) -> dict:
+            return {
+                "title": f"{y} × {x}",
+                "subtitle": spec,
+                "specName": spec,
+                "controlsMustLine": "controls_must = (none)",
+                "controlsTestLine": "controls_test = ctrl_a",
+                "controlsTestNames": ["ctrl_a"],
+                "y": y,
+                "x": x,
+                "matrixControls": ["ctrl_a"],
+                "matrixAltGroups": [],
+                "showSpecialMarkers": False,
+                "elapsedSeconds": None,
+                "records": [{
+                    "index": 0,
+                    "coef": 0.2,
+                    "se": 0.1,
+                    "t_value": 2.0,
+                    "p_value": 0.05,
+                    "ci99_lo": 0.0,
+                    "ci99_hi": 0.4,
+                    "ci95_lo": 0.02,
+                    "ci95_hi": 0.38,
+                    "ci90_lo": 0.04,
+                    "ci90_hi": 0.36,
+                    "obs": 100,
+                    "is_full": False,
+                    "is_no_controls_test": False,
+                    "star": 2,
+                    "color": "#15803D",
+                    "controls_all": ["ctrl_a"],
+                    "included_matrix_controls": ["ctrl_a"],
+                }],
+            }
+
+        html_text = rm_html._build_bundle_html([
+            payload("y1", "x1", "absorb(firm) vce(cluster firm)"),
+            payload("y2", "x1", "absorb(year) vce(robust)"),
+        ])
+        assert 'id="bundleY"' in html_text
+        assert 'id="bundleX"' in html_text
+        assert 'id="bundleSpec"' in html_text
+        assert "frame.srcdoc = view.srcdoc" in html_text
+        assert "absorb(firm) vce(cluster firm)" in html_text
+        assert "absorb(year) vce(robust)" in html_text
+        assert "Regression Monkey" in html_text
+
+    def test_html_payload_p_order_sorts_correctly(self) -> None:
+        """HTML payload 标记 p 模式时，负系数按 p 从小到大，正系数按 p 从大到小。"""
         def rec(index: int, coef: float, p_value: float) -> dict:
             return {
                 "index": index,
@@ -730,11 +834,11 @@ class TestEndToEndPython:
             re.search(r"const DATA\s*=\s*(\{.*?\});\n\s*const SIG_COLOR", html_text, re.S).group(1)
         )
         assert [(r["coef"], r["p_value"]) for r in data["records"]] == [
-            (-2.0, 0.10),
             (-1.0, 0.01),
-            (9.0, 0.001),
-            (2.0, 0.02),
+            (-2.0, 0.10),
             (1.0, 0.05),
+            (2.0, 0.02),
+            (9.0, 0.001),
         ]
 
     def test_sig_table_includes_p_t_and_sorts_by_p(

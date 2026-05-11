@@ -278,9 +278,9 @@ coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi
 
 ### 交互式网页
 
-传入 `--export-format html` 时，主入口不生成 PNG，而是在相同子文件夹中生成 `.html` 文件；传入 `--export-format both` 时，`.png` 和 `.html` 同名共存。HTML 是自包含文件，不需要额外服务器。
+传入 `--export-format html` 时，主入口不生成 PNG，而是在运行目录生成一个 `interactive.html`；传入 `--export-format both` 时，保留每张 PNG，同时额外生成这一个总 HTML。HTML 是自包含文件，不需要额外服务器。
 
-网页会复用 PNG 的排序和控制变量矩阵，并且规格标题只显示 `absorb(...) vce(...)` 这类 Stata 风格语句，不追加重复解释文字，下面两行显示 `controls_must = ...` 和 `controls_test = ...`；`controls_test` 中多个“选 0 或 1 个”的替代组会用 `[]` 包裹。鼠标悬停到任一规格点或该列区域时，会同时高亮 Star、系数、控制矩阵、Obs 面板中对应的竖向位置；点击规格点会固定当前选择，再次点击同一点或按 `Esc` 取消固定，点击别的点会切换固定选择。本次回归包含的控制变量黑色单元和 Obs 色块会变为紫色高亮，对应控制变量名称也会同步变色，并显示该规格的系数、p 值、t 值、置信区间、样本量和控制变量列表。HTML 会在 CI 图例右侧显示规格数和本轮耗时，也会显示与 PNG 一致的 `Full controls` 红色辅助竖线和 `No controls_test` 橙色辅助竖线；未选中时，`Full controls` 对应的控制变量色块同样使用红色，选中时对应列也会和普通规格一样变为紫色高亮。`controls_must` 替代组在控制变量矩阵左侧用实线工字线标记，`controls_test` 替代组用虚线工字线标记；HTML 中 `controls_test` 的多变量替代子组会自动使用一致的深色，并同步用于标题行的 `[...]`、CONTROLS 左侧变量名和对应矩阵色块，例如第一组为深蓝色。横向滚动 HTML 时，左侧刻度、控制变量名和工字线保持固定；如果所有 3 星显著规格都包含某个 `controls_test`，该控制变量名会加黄色底纹。
+总 HTML 在现有图表选项栏上方增加一行全局选项栏，可按 `Y`、`X` 和 `SPEC` 切换不同因变量、自变量和固定效应/聚类规格，因此多个 y×x×spec 结果只需打开一个 HTML。单个图表内部会复用 PNG 的排序和控制变量矩阵，并且规格标题只显示 `absorb(...) vce(...)` 这类 Stata 风格语句，不追加重复解释文字，下面两行显示 `controls_must = ...` 和 `controls_test = ...`；`controls_test` 中多个“选 0 或 1 个”的替代组会用 `[]` 包裹。HTML 顶栏采用紧凑信息条，集中显示规格数、本轮耗时、显著性计数、CI 图例和 `@Lachryz` 标识，并提供排序、显著性筛选和 CI band 开关。鼠标悬停到任一规格点或该列区域时，会同时高亮 STARS、系数、控制矩阵、Obs 面板中对应的竖向位置；点击规格点会固定当前选择，再次点击同一点或按 `Esc` 取消固定，点击别的点会切换固定选择。选中的 STARS 星格或非显著零线段会变为紫色，包括 `Full controls` 和 `No controls_test` 辅助线对应规格。本次回归包含的控制变量黑色单元和 Obs 色块会变为紫色高亮，对应控制变量名称也会同步变色；右侧详情栏显示该规格的系数、p 值、t 值、置信区间、样本量、adjusted R²，并按用户输入顺序把控制变量拆成 `TEST` 与 `MUST` 两组展示，其中 `TEST` 在前、`MUST` 在后。Stata 引擎生成的 HTML 会在右侧详情栏保留每个已纳入控制变量的真实系数和 p 值；没有控制变量统计的旧结果文件会继续显示占位。HTML 也会显示与 PNG 一致的 `Full controls` 红色辅助竖线和 `No controls_test` 橙色辅助竖线；未选中时，`Full controls` 对应的控制变量色块同样使用红色，选中时对应列也会和普通规格一样变为紫色高亮。`controls_must` 替代组在控制变量矩阵左侧用实线工字线标记，`controls_test` 替代组用虚线工字线标记；HTML 中 `controls_test` 的多变量替代子组会自动使用一致的深色，并同步用于标题行的 `[...]`、CONTROLS 左侧变量名和对应矩阵色块，例如第一组为深蓝色。横向滚动 HTML 时，左侧刻度、控制变量名和工字线保持固定；如果所有 3 星显著规格都包含某个 `controls_test`，该控制变量名会加黄色底纹。
 
 HTML 会把 Courier New 字体以内嵌 `@font-face` 的形式写入文件，因此复制单个 HTML 到其他位置查看时仍会使用同一字体。
 

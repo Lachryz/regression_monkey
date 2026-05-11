@@ -45,7 +45,7 @@ import pathlib
 import platform
 import tempfile
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, TypeAlias, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypeAlias, TypedDict, cast
 import numpy as np
 import pandas as pd
 from scipy import linalg as sp_linalg
@@ -87,6 +87,7 @@ class SpecRecord(TypedDict):
     se: float
     t_value: float
     p_value: float
+    adj_r2: NotRequired[float]
     df_resid: int
     ci99_lo: float
     ci99_hi: float
@@ -96,6 +97,7 @@ class SpecRecord(TypedDict):
     ci90_hi: float
     controls_test: set[str]
     controls_all: set[str]
+    control_stats: NotRequired[list[dict[str, Any]]]
     is_full: bool
     obs: int
 
@@ -217,6 +219,43 @@ def _varying_must_controls(must_slots: list[ControlSlot]) -> list[str]:
     return varying
 
 
+def _wrap_title_line(prefix: str, items: list[str], max_width: int = 90) -> str:
+    """将 'prefix = item1, item2, ...' 超出 max_width 时按逗号换行并缩进对齐。"""
+    if not items:
+        return f"{prefix} = (none)"
+    full_prefix = f"{prefix} = "
+    indent = " " * len(full_prefix)
+    lines: list[str] = []
+    current = full_prefix
+    for item in items:
+        sep = "" if current == full_prefix else ", "
+        candidate = current + sep + item
+        if current != full_prefix and len(candidate) > max_width:
+            lines.append(current)
+            current = indent + item
+        else:
+            current = candidate
+    lines.append(current)
+    return "\n".join(lines)
+
+
+def _compute_swimlane_ranges(
+    matrix_controls: list[str],
+    must_slots: list[ControlSlot],
+    test_slots: list[ControlSlot],
+) -> list[tuple[int, int]]:
+    """返回控制变量矩阵中各替代组的行范围 (start_row, end_row)，用于泳道背景。"""
+    row_map = {c: i for i, c in enumerate(matrix_controls)}
+    ranges: list[tuple[int, int]] = []
+    for slot in must_slots + test_slots:
+        if len(slot) < 2:
+            continue
+        rows = [row_map[c] for c in slot if c in row_map]
+        if len(rows) >= 2:
+            ranges.append((min(rows), max(rows)))
+    return ranges
+
+
 def _validate_control_lists_do_not_overlap(
     controls_test_flat: list[str],
     controls_must_flat: list[str],
@@ -302,11 +341,11 @@ def _format_plot_regression_count(count: int) -> str:
 
 
 def _sort_records_by_p_mode(records: list[SpecRecord]) -> list[SpecRecord]:
-    """p 模式只使用 p_value 本身排序；系数符号只决定左右分段。"""
+    """p 模式：负系数在左按 p 从小到大（最显著在最左），正系数在右按 p 从大到小（最显著在最右）。"""
     neg = [record for record in records if float(record["coef"]) < 0]
     pos = [record for record in records if float(record["coef"]) >= 0]
-    neg.sort(key=lambda record: float(record["p_value"]), reverse=True)
-    pos.sort(key=lambda record: float(record["p_value"]))
+    neg.sort(key=lambda record: float(record["p_value"]))
+    pos.sort(key=lambda record: float(record["p_value"]), reverse=True)
     return neg + pos
 
 
@@ -824,6 +863,10 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
             df_resid = _resid_df(N, k_total)
             t_value = coef / se
             p_value = _p_value_from_t(abs(t_value), df_resid)
+            sse = float(np.dot(e, e))
+            tss = float(np.dot(yr_, yr_))
+            r2 = 1.0 - sse / tss if tss > 0 else float("nan")
+            adj_r2 = 1.0 - (1.0 - r2) * ((N - 1) / df_resid) if np.isfinite(r2) and df_resid > 0 else float("nan")
             crit99, crit95, crit90 = _crit_values(df_resid)
         except Exception as _exc:
             chosen_all = chosen_must + chosen_test
@@ -835,6 +878,7 @@ def _enumerate_specs_chunk(bit_range: tuple[int, int]) -> tuple[list[SpecRecord]
             "se": se,
             "t_value": t_value,
             "p_value": p_value,
+            "adj_r2": adj_r2,
             "df_resid": df_resid,
             "ci99_lo": coef - crit99 * se,
             "ci99_hi": coef + crit99 * se,
@@ -1271,7 +1315,8 @@ def regression_monkey(
                     fig_width=fig_width, dpi=dpi,
                     output_path=output_path, title_suffix=title_suffix,
                     elapsed_seconds_preplot=perf_counter() - total_t0,
-                    sort_by_signed_p=sort_by_signed_p)
+                    sort_by_signed_p=sort_by_signed_p,
+                    matrix_swimlane_ranges=_compute_swimlane_ranges(matrix_controls, must_slots, test_slots) or None)
 
     # ── Step 5: 导出显著性汇总表 ──────────────────────────
     if output_path is not None and export_sig_table:
@@ -1605,6 +1650,7 @@ def regression_monkey_auto(
                 title_suffix  = meta["title_suffix"],
                 elapsed_seconds_preplot = perf_counter() - meta["t0"],
                 sort_by_signed_p = sort_by_signed_p,
+                matrix_swimlane_ranges = _compute_swimlane_ranges(matrix_controls, must_slots, test_slots) or None,
             )
 
         total_specs += len(records)
@@ -1844,9 +1890,9 @@ def _write_config_snapshot(config: dict, output_path: pathlib.Path) -> None:
 
 
 RESULT_COLUMNS = [
-    "coef", "se", "t_value", "p_value", "df_resid",
+    "coef", "se", "t_value", "p_value", "adj_r2", "df_resid",
     "ci99_lo", "ci99_hi", "ci95_lo", "ci95_hi", "ci90_lo", "ci90_hi",
-    "controls_test", "controls_all", "is_full", "obs",
+    "controls_test", "controls_all", "control_stats", "is_full", "obs",
 ]
 
 
@@ -1859,6 +1905,7 @@ def records_to_dataframe(records: list[SpecRecord]) -> pd.DataFrame:
             "se": r["se"],
             "t_value": r["t_value"],
             "p_value": r["p_value"],
+            "adj_r2": r.get("adj_r2", np.nan),
             "df_resid": r["df_resid"],
             "ci99_lo": r["ci99_lo"],
             "ci99_hi": r["ci99_hi"],
@@ -1868,6 +1915,7 @@ def records_to_dataframe(records: list[SpecRecord]) -> pd.DataFrame:
             "ci90_hi": r["ci90_hi"],
             "controls_test": json.dumps(sorted(r["controls_test"]), ensure_ascii=False),
             "controls_all": json.dumps(sorted(r["controls_all"]), ensure_ascii=False),
+            "control_stats": json.dumps(r.get("control_stats", []), ensure_ascii=False),
             "is_full": bool(r["is_full"]),
             "obs": r["obs"],
         })
@@ -1880,11 +1928,17 @@ def records_from_dataframe(df: pd.DataFrame) -> list[SpecRecord]:
     for _, row in df.iterrows():
         controls_test = set(json.loads(str(row["controls_test"])))
         controls_all = set(json.loads(str(row["controls_all"])))
+        control_stats_raw = row.get("control_stats", "[]")
+        try:
+            control_stats = json.loads(str(control_stats_raw)) if not pd.isna(control_stats_raw) else []
+        except json.JSONDecodeError:
+            control_stats = []
         records.append({
             "coef": float(row["coef"]),
             "se": float(row["se"]),
             "t_value": float(row["t_value"]),
             "p_value": float(row["p_value"]),
+            "adj_r2": float(row["adj_r2"]) if "adj_r2" in row.index and not pd.isna(row["adj_r2"]) else float("nan"),
             "df_resid": int(row["df_resid"]),
             "ci99_lo": float(row["ci99_lo"]),
             "ci99_hi": float(row["ci99_hi"]),
@@ -1894,6 +1948,7 @@ def records_from_dataframe(df: pd.DataFrame) -> list[SpecRecord]:
             "ci90_hi": float(row["ci90_hi"]),
             "controls_test": controls_test,
             "controls_all": controls_all,
+            "control_stats": control_stats if isinstance(control_stats, list) else [],
             "is_full": bool(row["is_full"]),
             "obs": int(row["obs"]),
         })
@@ -1935,7 +1990,8 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
           grouped_plot_records: list[GroupedPlotRecord] | None = None,
           interaction_plot_records: list[SpecRecord] | None = None,
           sort_by_signed_p: bool = False,
-          verbose: bool = True) -> Figure:
+          verbose: bool = True,
+          matrix_swimlane_ranges: list[tuple[int, int]] | None = None) -> Figure:
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     from matplotlib.lines import Line2D
@@ -2082,19 +2138,22 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     p_half_w = 0.5 - p_gap
     p_half_h = 0.33
     for i in range(n):
+        _sp_full = show_special_markers and bool(is_full[i])
+        _sp_noc = show_special_markers and bool(is_nocontrol[i])
         blocks = int(star_abs[i])
         if blocks == 0:
+            tick_color = _CFUL if _sp_full else _CNOC if _sp_noc else _CSTAR0
             ax_p.plot(
                 [i - p_half_w, i + p_half_w],
                 [0.0, 0.0],
-                color=_CSTAR0,
+                color=tick_color,
                 lw=1.0,
                 solid_capstyle="butt",
                 zorder=4,
             )
             continue
         direction = -1 if coefs[i] < 0 else 1
-        color_code = _CSTAR_NEG if coefs[i] < 0 else _CSTAR_POS
+        color_code = _CFUL if _sp_full else _CNOC if _sp_noc else (_CSTAR_NEG if coefs[i] < 0 else _CSTAR_POS)
         for block_idx in range(blocks):
             y_center = direction * (block_idx + 0.68)
             ax_p.add_patch(
@@ -2243,7 +2302,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         f"Y = {y_name}  |  X = {x_name}",
         f"specs = {n}  |  controls = {K_total}",
         spec_line or "",
-        f"controls_must = {', '.join(controls_must)}" if controls_must else "controls_must = (none)",
+        _wrap_title_line("controls_must", list(controls_must)),
         f"grouping_variable = {grouping_variable}" if has_grouped_panel and grouping_variable else "",
         f"Elapsed = {elapsed_total:.2f}s  |  @Lachryz",
     ]
@@ -2273,7 +2332,18 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
 
     # 先栅格化控制变量矩阵，再一次性绘制，避免大量 barh patch 拖慢首轮渲染
     if K_test > 0:
-        grid = np.ones((matrix_rows, n), dtype=float)
+        _SWIM_COLORS = ["#0B3A75", "#14532D", "#7F1D1D", "#581C87", "#7C2D12", "#164E63"]
+        if matrix_swimlane_ranges:
+            for gi, (r0, r1) in enumerate(matrix_swimlane_ranges):
+                y_lo = matrix_rows - 1 - r1 - 0.5
+                y_hi = matrix_rows - 1 - r0 + 0.5
+                ax2.axhspan(y_lo, y_hi, alpha=0.12, color=_SWIM_COLORS[gi % len(_SWIM_COLORS)], zorder=0)
+
+        # RGBA grid：非选中格透明（泳道背景可透出），选中格不透明并按特殊规格着色
+        _h2rgb = lambda h: tuple(int(h.lstrip("#")[i:i+2], 16) / 255 for i in (0, 2, 4))
+        _CFUL_rgb = _h2rgb(_CFUL)
+        _CNOC_rgb = _h2rgb(_CNOC)
+        grid_rgba = np.zeros((matrix_rows, n, 4), dtype=float)  # 全透明起点
         for k_idx, row_runs in enumerate(runs):
             row_ax = matrix_rows - 1 - k_idx
             for run in row_runs:
@@ -2281,13 +2351,17 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                     continue
                 x0 = run["start"]
                 x1 = x0 + run["len"]
-                grid[row_ax, x0:x1] = black_value(run["len"])
+                g = black_value(run["len"])
+                grid_rgba[row_ax, x0:x1, :3] = g
+                grid_rgba[row_ax, x0:x1, 3] = 1.0
+        if show_special_markers:
+            for sp_mask, sp_rgb in [(is_full, _CFUL_rgb), (is_nocontrol, _CNOC_rgb)]:
+                for col in np.where(sp_mask)[0]:
+                    inc_rows = grid_rgba[:, col, 3] == 1.0
+                    grid_rgba[inc_rows, col, :3] = sp_rgb
 
         ax2.imshow(
-            grid,
-            cmap="gray",
-            vmin=0.0,
-            vmax=1.0,
+            grid_rgba,
             aspect="auto",
             interpolation="nearest",
             origin="lower",
@@ -2342,40 +2416,21 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
     # ── 下下图：obs 条形图（原始取值） ─────────────────────
     ax3.set_facecolor("white")
     obs_mean = float(np.mean(obs_arr))
-    pos_mask = coefs >= 0
-    neg_mask = ~pos_mask
     _COBS = "#9CA3AF"
-
-    if pos_mask.any():
-        ax3.bar(
-            xs[pos_mask],
-            obs_arr[pos_mask] - obs_mean,
-            bottom=obs_mean,
-            width=1.0,
-            color=_COBS,
-            edgecolor=_COBS,
-            alpha=0.35,
-            linewidth=0.25,
-            antialiased=True,
-            snap=False,
-            zorder=2,
-            align="center",
-        )
-    if neg_mask.any():
-        ax3.bar(
-            xs[neg_mask],
-            obs_arr[neg_mask] - obs_mean,
-            bottom=obs_mean,
-            width=1.0,
-            color=_COBS,
-            edgecolor=_COBS,
-            alpha=0.35,
-            linewidth=0.25,
-            antialiased=True,
-            snap=False,
-            zorder=2,
-            align="center",
-        )
+    ax3.bar(
+        xs, obs_arr - obs_mean, bottom=obs_mean, width=1.0,
+        color=_COBS, edgecolor=_COBS, alpha=0.35, linewidth=0.25,
+        antialiased=True, snap=False, zorder=2, align="center",
+    )
+    if show_special_markers:
+        for sp_mask, sp_color in [(is_full, _CFUL), (is_nocontrol, _CNOC)]:
+            sp_idx = np.where(sp_mask)[0]
+            if sp_idx.size:
+                ax3.bar(
+                    xs[sp_idx], (obs_arr - obs_mean)[sp_idx], bottom=obs_mean, width=1.0,
+                    color=sp_color, edgecolor=sp_color, alpha=1.0, linewidth=0.25,
+                    antialiased=True, snap=False, zorder=3, align="center",
+                )
     ax3.axhline(obs_mean, color="#444444", lw=0.8, ls="-", zorder=3)
     if show_special_markers:
         for fi in np.where(is_full)[0]:
@@ -2629,30 +2684,23 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
         ax_group_obs.set_facecolor("white")
         ax_group_obs.axhline(0, color=_CGZERO, lw=0.8, ls="--", zorder=0)
         if np.any(group0_obs > 0):
-            ax_group_obs.bar(
-                xs,
-                group0_obs,
-                width=1.0,
-                color=_CG0,
-                edgecolor=_CG0,
-                alpha=0.35,
-                linewidth=0.25,
-                zorder=2,
-                align="center",
-            )
+            ax_group_obs.bar(xs, group0_obs, width=1.0, color=_CG0, edgecolor=_CG0,
+                             alpha=0.35, linewidth=0.25, zorder=2, align="center")
         if np.any(group1_obs > 0):
-            ax_group_obs.bar(
-                xs,
-                -group1_obs,
-                width=1.0,
-                color=_CG1,
-                edgecolor=_CG1,
-                alpha=0.35,
-                linewidth=0.25,
-                zorder=2,
-                align="center",
-            )
+            ax_group_obs.bar(xs, -group1_obs, width=1.0, color=_CG1, edgecolor=_CG1,
+                             alpha=0.35, linewidth=0.25, zorder=2, align="center")
         if show_special_markers:
+            for sp_mask, sp_color in [(is_full, _CFUL), (is_nocontrol, _CNOC)]:
+                sp_idx = np.where(sp_mask)[0]
+                if sp_idx.size:
+                    if np.any(group0_obs[sp_idx] > 0):
+                        ax_group_obs.bar(xs[sp_idx], group0_obs[sp_idx], width=1.0,
+                                         color=sp_color, edgecolor=sp_color,
+                                         alpha=1.0, linewidth=0.25, zorder=3, align="center")
+                    if np.any(group1_obs[sp_idx] > 0):
+                        ax_group_obs.bar(xs[sp_idx], -group1_obs[sp_idx], width=1.0,
+                                         color=sp_color, edgecolor=sp_color,
+                                         alpha=1.0, linewidth=0.25, zorder=3, align="center")
             for fi in np.where(is_full)[0]:
                 ax_group_obs.axvline(fi, color=_CFUL, lw=1.1, ls="-", zorder=4)
             for ni in np.where(is_nocontrol)[0]:

@@ -17,7 +17,6 @@ data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my
 # error: , "analyst_error_fiscal_f", "analyst_error_fiscal_pa", "analyst_error_fiscal_a", "analyst_error_annual_f", "analyst_error_annual_pa", "analyst_error_annual_a", "analyst_error_m_f", "analyst_error_m_pa", "analyst_error_m_a", "analyst_error_2m_f", "analyst_error_2m_pa", "analyst_error_2m_a", "analyst_error_3m_f"
 # dispersion: "analyst_dispersion_quarter_f", "analyst_dispersion_quarter_pa", "analyst_dispersion_quarter_a", "analyst_dispersion_fiscal_f", "analyst_dispersion_fiscal_pa", "analyst_dispersion_fiscal_a", "analyst_dispersion_annual_f", "analyst_dispersion_annual_pa", "analyst_dispersion_annual_a", "analyst_dispersion_m_f", "analyst_dispersion_m_pa", "analyst_dispersion_m_a", "analyst_dispersion_2m_f", "analyst_dispersion_2m_pa", "analyst_dispersion_2m_a"
 # "cnt_char", "readability"
-# 不显著："Shares", "INST", "BM", "TobinQ"
 # analyst_error analyst_dispersion SUE_analyst
 # ["cnt_char cnt_char_ex_num cnt_char_ex_num_eng cnt_word cnt_word_ex_num cnt_word_ex_num_eng cnt_sent cnt_sent_ex_num cnt_sent_ex_num_eng"]
 # ["tone_index1 tone_index2 tone_index3"]
@@ -57,11 +56,11 @@ grouping_variable_by_none = []
 # ── 输出 ──────────────────────────────────────────────────────
 # output 为输出目录；程序会在其中自动创建时间戳子目录，并按 export_format 导出 PNG/HTML
 output = "outputs"
-export_format = "png"  # png：静态图片；html：交互式网页；both：两者都导出
+export_format = "html"  # png：静态图片；html：交互式网页；both：两者都导出
 dpi = 300
 fig_width = 14
 n_jobs = 0
-order = "p"  # coef：按系数排序；p：负系数在左且 p 从大到小，正系数在右且 p 从小到大
+order = "p"  # coef：按系数排序；p：负系数在左且 p 从小到大（最显著在最左），正系数在右且 p 从大到小（最显著在最右）
 
 # ── 固定效应变量标识符 ────────────────────────────────────────
 Firm_FE   = "code"   # 个体（企业）固定效应列名

@@ -150,6 +150,7 @@ def _write_and_plot(
     output_path: pathlib.Path,
     meta: dict[str, Any],
     verbose: bool = True,
+    html_bundle_payloads: list[dict[str, Any]] | None = None,
 ) -> None:
     rm_py.write_analysis_artifacts(
         records=records,
@@ -164,6 +165,7 @@ def _write_and_plot(
         output_path=output_path,
         export_format=str(meta.get("export_format", "png")),
         verbose=verbose,
+        html_bundle_payloads=html_bundle_payloads,
     )
 
 
@@ -174,6 +176,7 @@ def _render_from_files(
     output_path: pathlib.Path,
     export_format: str,
     verbose: bool = True,
+    html_bundle_payloads: list[dict[str, Any]] | None = None,
 ) -> None:
     if export_format in {"png", "both"}:
         rm_plot.plot_from_files(
@@ -183,14 +186,22 @@ def _render_from_files(
             verbose=verbose,
         )
     if export_format in {"html", "both"}:
-        html_output_path = output_path.with_suffix(".html")
-        rm_html.html_from_files(
-            results_path=results_path,
-            meta_path=meta_path,
-            output_path=html_output_path,
-        )
-        if verbose:
-            print(f"[Saved] {html_output_path}")
+        if html_bundle_payloads is not None:
+            html_bundle_payloads.append(
+                rm_html.payload_from_files(
+                    results_path=results_path,
+                    meta_path=meta_path,
+                )
+            )
+        else:
+            html_output_path = output_path.with_suffix(".html")
+            rm_html.html_from_files(
+                results_path=results_path,
+                meta_path=meta_path,
+                output_path=html_output_path,
+            )
+            if verbose:
+                print(f"[Saved] {html_output_path}")
 
 
 def _cleanup_plot_handoff(*, results_path: pathlib.Path, meta_path: pathlib.Path, keep_temp: bool) -> None:
@@ -290,6 +301,7 @@ def _run_python_pair(
     run_output_dir: pathlib.Path,
     resolved_n_jobs: int,
     on_plot_done: Callable[[pathlib.Path, tuple[str, ...], float], None] | None = None,
+    html_bundle_payloads: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     pair_sig_rows: list[dict[str, Any]] = []
     pair_total_specs = 0
@@ -362,6 +374,7 @@ def _run_python_pair(
                     "elapsed_seconds_preplot": perf_counter() - spec_t0,
                     "export_format": args.export_format,
                 },
+                html_bundle_payloads=html_bundle_payloads,
             )
             _cleanup_plot_handoff(
                 results_path=results_path,
@@ -430,6 +443,7 @@ def _run_python_pair(
             "elapsed_seconds_preplot": perf_counter() - spec_t0,
             "export_format": args.export_format,
         },
+        html_bundle_payloads=html_bundle_payloads,
     )
     _cleanup_plot_handoff(
         results_path=results_path,
@@ -605,6 +619,9 @@ def main() -> None:
         ]
 
     plot_progress = _PlotProgressEstimator(planned_plot_fe_types)
+    html_bundle_payloads: list[dict[str, Any]] | None = (
+        [] if args.export_format in {"html", "both"} else None
+    )
 
     def on_plot_done(output_path: pathlib.Path, fe_type: tuple[str, ...], elapsed_seconds: float) -> None:
         print(plot_progress.update(fe_type, elapsed_seconds))
@@ -623,6 +640,7 @@ def main() -> None:
             output_path=output_path,
             export_format=args.export_format,
             verbose=False,
+            html_bundle_payloads=html_bundle_payloads,
         )
         _cleanup_plot_handoff(
             results_path=results_path,
@@ -679,6 +697,7 @@ def main() -> None:
                 run_output_dir=run_output_dir,
                 resolved_n_jobs=resolved_n_jobs,
                 on_plot_done=on_plot_done,
+                html_bundle_payloads=html_bundle_payloads,
             )
         else:
             pair_rows = []
@@ -712,6 +731,13 @@ def main() -> None:
     )
     for line in rm_py._format_combo_summary_lines(combo_summaries):
         print(line)
+    if html_bundle_payloads is not None and html_bundle_payloads:
+        bundle_path = run_output_dir / "interactive.html"
+        rm_html.html_bundle_from_payloads(
+            html_bundle_payloads,
+            output_path=bundle_path,
+        )
+        print(f"[Saved] {bundle_path}")
     print(f"\n全部完成：{len(combos)} 个 y×x 组合")
 
 

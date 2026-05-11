@@ -57,6 +57,12 @@ def plot_from_files(
 
     out = pathlib.Path(output_path) if output_path is not None else pathlib.Path(meta["output_path"])
     out.parent.mkdir(parents=True, exist_ok=True)
+    _alt_groups = list(meta.get("matrix_alt_groups", []))
+    _swimlane_ranges = [
+        (int(g["start"]), int(g["end"]))
+        for g in _alt_groups
+        if int(g.get("end", -1)) > int(g.get("start", -1))
+    ] or None
     rm_py._plot(
         records=records,
         y_name=str(meta["y"]),
@@ -75,6 +81,7 @@ def plot_from_files(
         interaction_plot_records=list(meta.get("interaction_plot_records", [])),
         sort_by_signed_p=rm_py._order_uses_p_mode(plot_order),
         verbose=verbose,
+        matrix_swimlane_ranges=_swimlane_ranges,
     )
 
 
