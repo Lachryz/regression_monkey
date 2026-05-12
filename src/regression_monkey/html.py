@@ -1483,6 +1483,7 @@ def _build_html(payload: dict[str, Any]) -> str:
   const chartWrap = document.getElementById("chart-wrap");
   let activeIdx = null;
   let pinnedIdx = null;
+  let getSortedRecords = () => records.slice();
 
   /* ── Activation ─────────────────────────────────────── */
   function activate(idx, pin = false) {{
@@ -1685,7 +1686,7 @@ def _build_html(payload: dict[str, Any]) -> str:
 
     const plotRight = left + plotWidth;
     const labelX = plotRight + 18;
-    svg.querySelectorAll(".plot-clip-rect, .panel-frame").forEach(el => {{
+    svg.querySelectorAll(".plot-clip-rect, .panel-frame, .swimlane-bg").forEach(el => {{
       el.setAttribute("width", plotWidth.toFixed(3));
     }});
     svg.querySelectorAll(".plot-x2").forEach(el => {{
@@ -1755,12 +1756,18 @@ def _build_html(payload: dict[str, Any]) -> str:
 
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {{
       e.preventDefault();
-      const cur  = activeIdx ?? (e.key === "ArrowRight" ? -1 : 0);
-      const next = e.key === "ArrowRight"
-        ? Math.min(cur + 1, n - 1)
-        : Math.max(cur - 1, 0);
+      const arr = getSortedRecords();
+      const sn = arr.length;
+      if (!sn) return;
+      let curPos = activeIdx !== null
+        ? arr.findIndex(r => Number(r.index) === activeIdx)
+        : -1;
+      if (curPos === -1 && e.key === "ArrowLeft") curPos = sn;
+      const nextPos = e.key === "ArrowRight"
+        ? Math.min(curPos + 1, sn - 1)
+        : Math.max(curPos - 1, 0);
       pinnedIdx = null;
-      activate(next);
+      activate(Number(arr[nextPos].index));
     }}
 
     if (e.key === "Escape") clearActive(true, true);
@@ -1837,6 +1844,7 @@ def _build_html(payload: dict[str, Any]) -> str:
       }} else if (state.sort === "obs") arr.sort((a, b) => a.obs - b.obs);
       return arr;
     }}
+    getSortedRecords = sortedRecords;
 
     function isDimmed(record) {{
       if (!state.sigFilter.has(record.star)) return true;
@@ -2512,6 +2520,7 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                     "fill": grp_color,
                     "opacity": "0.12",
                     "pointer-events": "none",
+                    "class": "swimlane-bg",
                 },
             )
         )
