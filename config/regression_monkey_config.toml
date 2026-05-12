@@ -1,0 +1,95 @@
+# regression_monkey_config.toml
+# 规格曲线分析配置文件
+#
+# 用法：
+#   uv run regression_monkey.py                         # 自动加载本文件（同目录）
+#   uv run regression_monkey.py regression_monkey_config.toml  # 显式指定路径
+#   uv run regression_monkey.py other.toml --dpi 600    # 命令行参数覆盖配置
+
+# ── 数据 ──────────────────────────────────────────────────────
+data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my_data/data/final/winsored.dta"
+
+# ── 变量 ──────────────────────────────────────────────────────
+# Fanalyst_error_keepfirst_30 Fanalyst_dispersion_keepfirst_30 Fanalyst_error_keepfirst_60 Fanalyst_dispersion_keepfirst_60 Fanalyst_error_keepfirst_90 Fanalyst_dispersion_keepfirst_90
+# FCAR_0_1 FCAR_2_61 FSpeed Fpostfiling_rmse
+# FAATT FPATT FMATT FMPATT FATT
+# Fminority
+# error: , "analyst_error_fiscal_f", "analyst_error_fiscal_pa", "analyst_error_fiscal_a", "analyst_error_annual_f", "analyst_error_annual_pa", "analyst_error_annual_a", "analyst_error_m_f", "analyst_error_m_pa", "analyst_error_m_a", "analyst_error_2m_f", "analyst_error_2m_pa", "analyst_error_2m_a", "analyst_error_3m_f"
+# dispersion: "analyst_dispersion_quarter_f", "analyst_dispersion_quarter_pa", "analyst_dispersion_quarter_a", "analyst_dispersion_fiscal_f", "analyst_dispersion_fiscal_pa", "analyst_dispersion_fiscal_a", "analyst_dispersion_annual_f", "analyst_dispersion_annual_pa", "analyst_dispersion_annual_a", "analyst_dispersion_m_f", "analyst_dispersion_m_pa", "analyst_dispersion_m_a", "analyst_dispersion_2m_f", "analyst_dispersion_2m_pa", "analyst_dispersion_2m_a"
+# "cnt_char", "readability"
+# analyst_error analyst_dispersion SUE_analyst
+# ["cnt_char cnt_char_ex_num cnt_char_ex_num_eng cnt_word cnt_word_ex_num cnt_word_ex_num_eng cnt_sent cnt_sent_ex_num cnt_sent_ex_num_eng"]
+# ["tone_index1 tone_index2 tone_index3"]
+# ["similarity_wingo_1 similarity_wingo_2 similarity_tf_idf_1 similarity_tf_idf_2 similarity_lda_1 similarity_lda_2"]
+# ["similarity_wingo_3 similarity_tf_idf_3 similarity_lda_3"]
+# "bussiness_complexity"
+
+
+
+y = ["analyst_error_quarter_pa", "analyst_dispersion_quarter_pa"]
+# y = ["analyst_dispersion_quarter_a", "analyst_dispersion_quarter_pa", "analyst_dispersion_quarter_f"]
+# y = ["analyst_error_quarter_a", "analyst_error_quarter_pa", "analyst_error_quarter_f"]
+# y = ["analyst_error_m_a", "analyst_error_m_pa", "analyst_error_m_f"]
+# y = ["analyst_error_fiscal_a", "analyst_error_fiscal_pa", "analyst_error_fiscal_f"]
+# y = ["analyst_error_2m_a", "analyst_error_2m_pa", "analyst_error_2m_f"]
+
+x = ["quant"]
+# x_list = ["ln_info", "ln_quant", "ln_qual"]
+
+controls_test = ["Mshare", ["AuditFee", "ln_audit_fee"], ["cnt_char cnt_char_ex_num cnt_char_ex_num_eng cnt_word cnt_word_ex_num cnt_word_ex_num_eng cnt_sent cnt_sent_ex_num cnt_sent_ex_num_eng"] ]
+controls_must = [
+    "qual", "no_info",  # 图片数量
+    "Lev", "Size", "ROA", "BM", "Growth",  # 财务指标
+    "SOE", "INST", "Top1",  # 股权结构
+    "Loss", "Goodnews", "meps_std_4y", # 盈余方向和波动性
+    "disclosure_quality",  # 整体信息披露质量
+    "Big4",  # 会计数字质量
+    "readability", "tone_index1", "similarity_tf_idf_3", "similarity_tf_idf_2",   # 文本特征
+    "analyst_report", "business_complexity_indyearadj" # 分析师覆盖度
+]
+
+# 仅 Stata 引擎支持；每个连续分组变量会在每个 all 样本规格的 e(sample) 内动态二分，并单独生成扩展图。
+grouping_variable_by_ind_time = []
+grouping_variable_by_time = []
+grouping_variable_by_none = []
+
+# ── 输出 ──────────────────────────────────────────────────────
+# output 为输出目录；程序会在其中自动创建时间戳子目录，并按 export_format 导出 PNG/HTML
+output = "outputs"
+export_format = "html"  # png：静态图片；html：交互式网页；both：两者都导出
+dpi = 300
+fig_width = 14
+n_jobs = 0
+order = "p"  # coef：按系数排序；p：负系数在左且 p 从小到大（最显著在最左），正系数在右且 p 从大到小（最显著在最右）
+
+# ── 固定效应变量标识符 ────────────────────────────────────────
+Firm_FE   = "code"   # 个体（企业）固定效应列名
+Ind_FE    = "ind"    # 行业固定效应列名
+Time_FE   = "year"   # 时间固定效应列名
+Region_FE = "pref"   # 地区固定效应列名（县级：city、地级：pref、省级：prov）
+
+# ── 自动模式：规格开关（设为 true 则启用对应 FE+VCE 组合） ───
+# 注意：这里必须使用 Python 脚本的 argparse dest 名，也就是下划线命名。
+# 可同时启用多个，每个生成一张图。
+
+absorb_firm_time_vce_cluster_firm = true                # absorb(Firm Time)                         vce(cluster Firm)      — 个体+年度FE，会计实证默认基准
+absorb_firm_indtime_vce_cluster_firm = false              # absorb(Firm i.Ind#i.Time)                 vce(cluster Firm)      — 行业×年度FE
+
+
+absorb_firm_time_vce_cluster_ind = false                 # absorb(Firm Time)                         vce(cluster Ind)       — 行业层面聚类
+absorb_firm_time_vce_cluster_region = false              # absorb(Firm Time)                         vce(cluster Region)    — 地区层面聚类（需 Region_FE）
+absorb_firm_time_vce_cluster_firm_time = false           # absorb(Firm Time)                         vce(cluster Firm Time) — CGM双向聚类
+absorb_firm_time_vce_robust = false                      # absorb(Firm Time)                         vce(robust)            — 个体+年度FE，异方差稳健标准误
+
+absorb_ind_time_vce_cluster_firm = false                 # absorb(Ind Time)                          vce(cluster Firm)      — 行业+年度FE，公司聚类
+absorb_ind_time_vce_robust = false                       # absorb(Ind Time)                          vce(robust)            — 行业+年度FE，异方差稳健标准误
+
+
+absorb_firm_indtime_vce_robust = false                   # absorb(Firm i.Ind#i.Time)                 vce(robust)            — 行业×年度FE，异方差稳健标准误
+absorb_firm_regiontime_vce_cluster_firm = false          # absorb(Firm i.Region#i.Time)              vce(cluster Firm)      — 地区×年度FE（需 Region_FE）
+absorb_firm_regiontime_vce_robust = false                # absorb(Firm i.Region#i.Time)              vce(robust)            — 地区×年度FE，异方差稳健标准误（需 Region_FE）
+absorb_firm_indtime_regiontime_vce_cluster_firm = false  # absorb(Firm i.Ind#i.Time i.Region#i.Time) vce(cluster Firm)      — 双重剥离（需 Region_FE）
+absorb_firm_indtime_regiontime_vce_robust = false        # absorb(Firm i.Ind#i.Time i.Region#i.Time) vce(robust)            — 双重剥离，异方差稳健标准误（需 Region_FE）
+
+absorb_ind_region_time_vce_cluster_ind = false           # absorb(Ind Time Region)                   vce(cluster Ind)       — 三向FE（需 Region_FE）
+absorb_ind_region_time_vce_robust = false                # absorb(Ind Time Region)                   vce(robust)            — 三向FE，异方差稳健标准误（需 Region_FE）
