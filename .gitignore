@@ -14,9 +14,12 @@ data/
 legacy/
 CLAUDE.md
 AGENTS.md
-__init__.py
 .DS_Store
 .mypy_cache
 .ruff_cache
 .pytest_cache
 *.backup
+config.toml
+config.test.toml
+*.sh
+

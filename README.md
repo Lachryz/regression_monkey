@@ -12,17 +12,17 @@
 
 ## 项目文件
 
-- `regression_monkey.py`：主入口，只负责读取配置、调度分析引擎、调用绘图脚本、导出总汇总
-- `regression_monkey_py.py`：Python 分析引擎，只负责枚举规格、回归估计和导出标准结果文件
-- `regression_monkey_stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
-- `regression_monkey_plot.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
-- `regression_monkey_html.py`：独立交互式网页脚本，只从同一批标准结果文件读取结果并生成自包含 HTML
-- `regression_monkey_config.toml`：推荐使用的配置文件
+- `src/regression_monkey/__main__.py`：主入口，只负责读取配置、调度分析引擎、调用绘图脚本、导出总汇总
+- `src/regression_monkey/py.py`：Python 分析引擎，只负责枚举规格、回归估计和导出标准结果文件
+- `src/regression_monkey/stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
+- `src/regression_monkey/plot.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
+- `src/regression_monkey/html.py`：独立交互式网页脚本，只从同一批标准结果文件读取结果并生成自包含 HTML
+- `config/regression_monkey_config.toml`：推荐使用的配置文件
 - `run_regression_monkey.sh`：示例启动脚本
 
 ## 运行环境
 
-项目基于 `uv` 运行，不需要单独维护 `pyproject.toml`。
+项目基于 `uv` 运行，依赖在 `pyproject.toml` 中声明。运行前需执行 `uv sync` 安装依赖。
 
 主要依赖：
 
@@ -33,28 +33,28 @@
 
 ## 主要使用方式：配置文件驱动的自动模式
 
-推荐把变量、固定效应标识符和规格开关都写在 `regression_monkey_config.toml` 中，然后直接运行：
+推荐把变量、固定效应标识符和规格开关都写在 `config/regression_monkey_config.toml` 中，然后直接运行：
 
 ```bash
-uv run regression_monkey.py
+uv run regression-monkey
 ```
 
-如果配置文件不在脚本同目录，也可以显式指定：
+如果配置文件不在默认位置，也可以显式指定：
 
 ```bash
-uv run regression_monkey.py regression_monkey_config.toml
+uv run regression-monkey config/regression_monkey_config.toml
 ```
 
 命令行仍然可以覆盖配置文件中的参数，例如：
 
 ```bash
-uv run regression_monkey.py regression_monkey_config.toml --dpi 600 --n-jobs 0
+uv run regression-monkey config/regression_monkey_config.toml --dpi 600 --n-jobs 0
 ```
 
 默认使用 Python 引擎。也可以在 TOML 中设置 `engine = "stata"`，或在命令行指定：
 
 ```bash
-uv run regression_monkey.py regression_monkey_config.toml --engine stata
+uv run regression-monkey config/regression_monkey_config.toml --engine stata
 ```
 
 主入口会先调用对应分析引擎写出临时的 `*_results.csv` 和 `*_plot_meta.json`，再调用独立导出脚本生成结果。默认生成 PNG；如果希望用交互式网页替代图片，可传 `--export-format html`，或传 `--export-format both` 同时导出 PNG 和 HTML。导出成功后，主入口默认会删除这两个临时文件；如需保留用于调试或重画，请传 `--keep-temp`。
@@ -121,15 +121,15 @@ controls_must = [
 注意：
 
 - CLI 的 `--controls-test` / `--controls-must` 仍然只能表达平铺变量名；shell 已经会按空格拆成多个参数
-- 如果需要混合结构，请使用 `regression_monkey_config.toml` 或 Python API
+- 如果需要混合结构，请使用 `config/regression_monkey_config.toml` 或 Python API
 
 ## 自动模式
 
-自动模式是当前推荐的主要工作流。你通常只需要维护 `regression_monkey_config.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
+自动模式是当前推荐的主要工作流。你通常只需要维护 `config/regression_monkey_config.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
 
 ### 配置文件示例
 
-仓库中提供了一个完整模板：[regression_monkey_example.toml](/Users/zhaoxun/scripts/test/regression_monkey/regression_monkey_example.toml)。复制后把 `data`、`y`、`x`、控制变量和固定效应列名改成你的真实字段即可。
+仓库中提供了一个完整模板：`config/regression_monkey_example.toml`。复制后把 `data`、`y`、`x`、控制变量和固定效应列名改成你的真实字段即可。
 
 ```toml
 data = "path/to/data.dta"
@@ -167,7 +167,7 @@ absorb_ind_time_vce_cluster_firm = true
 如果你不想依赖 TOML，也可以直接从 CLI 启用自动规格：
 
 ```bash
-uv run regression_monkey.py --data panel.dta \
+uv run regression-monkey --data panel.dta \
   --y MPATT \
   --x ln_info ln_quant ln_qual \
   --controls-must Lev Size ROA \
@@ -206,7 +206,7 @@ uv run regression_monkey.py --data panel.dta \
 示例：
 
 ```bash
-uv run regression_monkey.py --data panel.dta \
+uv run regression-monkey --data panel.dta \
   --y MPATT \
   --x ln_info \
   --controls-must Lev Size ROA \
@@ -218,7 +218,7 @@ uv run regression_monkey.py --data panel.dta \
 自动生成第二聚类变量：
 
 ```bash
-uv run regression_monkey.py --data panel.dta \
+uv run regression-monkey --data panel.dta \
   --y MPATT \
   --x ln_info \
   --controls-must Lev Size ROA \
@@ -239,11 +239,11 @@ outputs/20260414_174122/
 目录中通常包括：
 
 - `config_snapshot.toml`：本次运行的有效配置快照
-- 按固定效应和聚类组合分组的导出子文件夹：每个 `y × x × 规格` 对应一个 PNG、HTML 或两者
+- 按固定效应和聚类组合分组的 PNG 导出子文件夹；HTML 模式只在运行根目录写一个 `interactive.html`
 - `sig.csv`：全运行合并后的显著性汇总表
 
 主入口会按启用规格逐个估计并立即导出对应结果，不会等同一个 `y × x` 的全部规格都跑完后再集中出图；Stata 引擎也会在每个 reghdfe 规格返回结果后立刻导出。
-PNG/HTML 会保存到时间戳目录下按固定效应和聚类组合命名的子文件夹；`config_snapshot.toml`、`sig.csv`、`*_results.csv`、`*_plot_meta.json`、Stata `.do`、`.log`、`*_stata_results.dta` 和临时输入 `.dta` 都保留在时间戳根目录，不进入导出子文件夹。
+PNG 会保存到时间戳目录下按固定效应和聚类组合命名的子文件夹；HTML 模式只在时间戳根目录生成一个 `interactive.html`，不会创建空的规格子文件夹。`config_snapshot.toml`、`sig.csv`、`*_results.csv`、`*_plot_meta.json`、Stata `.do`、`.log`、`*_stata_results.dta` 和临时输入 `.dta` 都保留在时间戳根目录，不进入导出子文件夹。
 每张图开始回归前，终端会打印 `[本图回归数] 256 个回归` 这类纯数量提示；普通图等于该图的控制变量组合数，Stata 分组扩展图按每个控制变量组合的动态 all 样本回归、`b_var=0/1` 两组回归、以及交乘项回归合计。
 主入口会根据本次运行的总导出数显示进度条，每个逻辑图导出完成后更新一次进度。
 进度条会按固定效应类型（例如 `firm+time`、`firm+_ind_time`）记录实际耗时；等本次运行涉及的每类固定效应都至少完成一张图后，开始显示预计剩余时间和预计完成时刻，并随后续结果动态更新。进度行不附加 PNG 文件名。
@@ -280,7 +280,7 @@ coef,se,t_value,p_value,df_resid,ci99_lo,ci99_hi,ci95_lo,ci95_hi,ci90_lo,ci90_hi
 
 传入 `--export-format html` 时，主入口不生成 PNG，而是在运行目录生成一个 `interactive.html`；传入 `--export-format both` 时，保留每张 PNG，同时额外生成这一个总 HTML。HTML 是自包含文件，不需要额外服务器。
 
-总 HTML 在现有图表选项栏上方增加一行全局选项栏，可按 `Y`、`X` 和 `SPEC` 切换不同因变量、自变量和固定效应/聚类规格，因此多个 y×x×spec 结果只需打开一个 HTML。单个图表内部会复用 PNG 的排序和控制变量矩阵，并且规格标题只显示 `absorb(...) vce(...)` 这类 Stata 风格语句，不追加重复解释文字，下面两行显示 `controls_must = ...` 和 `controls_test = ...`；`controls_test` 中多个“选 0 或 1 个”的替代组会用 `[]` 包裹。HTML 顶栏采用紧凑信息条，集中显示规格数、本轮耗时、显著性计数、CI 图例和 `@Lachryz` 标识，并提供排序、显著性筛选和 CI band 开关。鼠标悬停到任一规格点或该列区域时，会同时高亮 STARS、系数、控制矩阵、Obs 面板中对应的竖向位置；点击规格点会固定当前选择，再次点击同一点或按 `Esc` 取消固定，点击别的点会切换固定选择。选中的 STARS 星格或非显著零线段会变为紫色，包括 `Full controls` 和 `No controls_test` 辅助线对应规格。本次回归包含的控制变量黑色单元和 Obs 色块会变为紫色高亮，对应控制变量名称也会同步变色；右侧详情栏显示该规格的系数、p 值、t 值、置信区间、样本量、adjusted R²，并按用户输入顺序把控制变量拆成 `TEST` 与 `MUST` 两组展示，其中 `TEST` 在前、`MUST` 在后。Stata 引擎生成的 HTML 会在右侧详情栏保留每个已纳入控制变量的真实系数和 p 值；没有控制变量统计的旧结果文件会继续显示占位。HTML 也会显示与 PNG 一致的 `Full controls` 红色辅助竖线和 `No controls_test` 橙色辅助竖线；未选中时，`Full controls` 对应的控制变量色块同样使用红色，选中时对应列也会和普通规格一样变为紫色高亮。`controls_must` 替代组在控制变量矩阵左侧用实线工字线标记，`controls_test` 替代组用虚线工字线标记；HTML 中 `controls_test` 的多变量替代子组会自动使用一致的深色，并同步用于标题行的 `[...]`、CONTROLS 左侧变量名和对应矩阵色块，例如第一组为深蓝色。横向滚动 HTML 时，左侧刻度、控制变量名和工字线保持固定；如果所有 3 星显著规格都包含某个 `controls_test`，该控制变量名会加黄色底纹。
+总 HTML 在现有图表选项栏上方增加一行全局选项栏，可按因变量、自变量和固定效应/聚类规格切换不同结果，因此多个 y×x×spec 结果只需打开一个 HTML；最上方只显示三个选择框，不显示 `Y`、`X`、`SPEC` 字符标签。单个图表内部会复用 PNG 的排序和控制变量矩阵，并且规格标题只显示 `absorb(...) vce(...)` 这类 Stata 风格语句，不追加重复解释文字，下面两行显示 `controls_must = ...` 和 `controls_test = ...`，这两行使用更宽的换行阈值；`controls_test` 中多个“选 0 或 1 个”的替代组会用 `[]` 包裹。HTML 不再区分命令行或元数据里的 `p` / `coef` 绘图模式；网页顶栏提供 `coef`、`obs`、`sig(coef)/p` 三种交互排序，默认选中并应用 `sig(coef)/p`，选中按钮的白色块会常态显示且不会被图内点选中状态清除。鼠标悬停到任一规格点或该列区域时，会同时高亮 STARS、系数、控制矩阵、Obs 面板中对应的竖向位置；点击规格点会固定当前选择，再次点击同一点或按 `Esc` 取消固定，点击别的点会切换固定选择。STARS 面板不再为非显著规格绘制零线段；普通显著星格按方向着色，正系数为红灰色、负系数为蓝灰色，选中时变为紫色。COEF 面板中的 0 线使用更粗的红色虚线。本次回归包含的控制变量黑色单元和 Obs 色块会变为紫色高亮，对应控制变量名称也会同步变色；右侧详情栏显示该规格的系数、p 值、t 值、置信区间、样本量、adjusted R²、within R² 和 F 值，并按用户输入顺序把控制变量拆成 `MUST` 与 `TEST` 两组展示，其中 `MUST` 在前、`TEST` 在后。右侧每个控制变量名前都有一个方块徽标，按该控制变量自身的系数和 p 值显示 `-3` 到 `+3`；不显著时按符号显示 `0-` 或 `0+` 并使用灰色底，显著负向为浅蓝底深蓝字，显著正向为浅红底深红字。Stata 引擎生成的 HTML 会在右侧详情栏保留每个已纳入控制变量的真实系数和 p 值；没有控制变量统计的旧结果文件会继续显示占位。HTML 也会显示与 PNG 一致的 `Full controls` 红色辅助竖线和 `No controls_test` 橙色辅助竖线；顶栏 `Guides` 里的 `ALL TEST` 和 `NO TEST` 可分别开关红色、橙色辅助线。未选中时，`Full controls` 对应的控制变量色块同样使用红色，选中时对应列也会和普通规格一样变为紫色高亮。`controls_must` 替代组在控制变量矩阵左侧用实线工字线标记，`controls_test` 替代组用虚线工字线标记；HTML 中 `controls_test` 的多变量替代子组会自动使用一致的深色，并同步用于标题行的 `[...]`、CONTROLS 左侧变量名和对应矩阵色块，例如第一组为深蓝色。STARS、COEF、CONTROLS、OBS 四个主面板会根据右侧详情栏后的可用宽度动态收缩，并在超过当前可用宽度时只让面板内容内部同步横向滚动，确保右侧的 STARS、COEF、CONTROLS、OBS 标签不会被详情栏挡住；左侧刻度、控制变量名、工字线位于白色固定边栏上方，不会被中间滚动内容覆盖；如果所有 3 星显著规格都包含某个 `controls_test`，该控制变量名会加黄色底纹。
 
 HTML 会把 Courier New 字体以内嵌 `@font-face` 的形式写入文件，因此复制单个 HTML 到其他位置查看时仍会使用同一字体。
 
@@ -395,10 +395,10 @@ Y = analyst_error_m_a   ×  X = ln_quant 无 90% 及以上显著的规格
 
 ## Stata 批处理模式
 
-仓库还提供 `regression_monkey_stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎。推荐仍然通过主入口调度：
+仓库还提供 `src/regression_monkey/stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎。推荐仍然通过主入口调度：
 
 ```bash
-uv run regression_monkey.py regression_monkey_config.toml --engine stata
+uv run regression-monkey config/regression_monkey_config.toml --engine stata
 ```
 
 分析脚本会为每个 `y × x × 规格` 输出标准结果文件：
@@ -409,13 +409,13 @@ uv run regression_monkey.py regression_monkey_config.toml --engine stata
 绘图脚本可以单独重画已有结果，不需要重新读取原始数据或重新回归：
 
 ```bash
-uv run regression_monkey_plot.py --results path/to/foo_results.csv --meta path/to/foo_plot_meta.json --output path/to/foo.png
+uv run regression-monkey-plot --results path/to/foo_results.csv --meta path/to/foo_plot_meta.json --output path/to/foo.png
 ```
 
 也可以从同一批标准结果文件单独生成交互网页：
 
 ```bash
-uv run regression_monkey_html.py --results path/to/foo_results.csv --meta path/to/foo_plot_meta.json --output path/to/foo.html
+uv run regression-monkey-html --results path/to/foo_results.csv --meta path/to/foo_plot_meta.json --output path/to/foo.html
 ```
 
 通过主入口运行时，这两个标准结果文件默认会在 PNG/HTML 导出成功后删除。需要单独重画时，请在主入口运行时加上 `--keep-temp`。
@@ -431,6 +431,7 @@ uv run regression_monkey_html.py --results path/to/foo_results.csv --meta path/t
 - 如果某个 Stata 规格没有返回任何有效回归结果，程序会立即报错并打印该规格的 `.do` / `.log` 路径和 Stata 日志尾部，不再继续后续规格或汇总为“无显著”
 
 Stata 正常运行时，控制台只打印当前规格的可读 `absorb(...) vce(...)` 行，不打印临时 `.dta`、PID、`.do` / `.log` 或 `[Saved]` 保存提示。若 Python 进程收到外部 `SIGINT`（例如终端、运行器或脚本控制发出的中断信号），主入口会停止 Stata 子进程并以退出码 130 结束，同时打印 `.do`、`.log` 的绝对路径和 Stata 日志尾部，不再显示 Python traceback。遇到长时间运行或异常中断时，优先查看对应 `.log`，确认 Stata 是仍在执行大量 reghdfe 规格，还是在某条命令处报错。
+
 - 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
 
 ## 开发与验证
@@ -438,19 +439,19 @@ Stata 正常运行时，控制台只打印当前规格的可读 `absorb(...) vce
 推荐的基础检查：
 
 ```bash
-uv run python -m py_compile regression_monkey.py regression_monkey_py.py regression_monkey_stata.py regression_monkey_plot.py regression_monkey_html.py
+uv run python -m py_compile src/regression_monkey/__main__.py src/regression_monkey/py.py src/regression_monkey/stata.py src/regression_monkey/plot.py src/regression_monkey/html.py
 ```
 
 用现有 TOML 跑 Python 引擎端到端：
 
 ```bash
-uv run regression_monkey.py regression_monkey_config.toml --engine python --n-jobs 1
+uv run regression-monkey config/regression_monkey_config.toml --engine python --n-jobs 1
 ```
 
 只重画已有结果：
 
 ```bash
-uv run regression_monkey_plot.py \
+uv run regression-monkey-plot \
   --results outputs/<timestamp>/<name>_results.csv \
   --meta outputs/<timestamp>/<name>_plot_meta.json \
   --output outputs/<timestamp>/<name>_replot.png
@@ -459,7 +460,7 @@ uv run regression_monkey_plot.py \
 只重画交互网页：
 
 ```bash
-uv run regression_monkey_html.py \
+uv run regression-monkey-html \
   --results outputs/<timestamp>/<name>_results.csv \
   --meta outputs/<timestamp>/<name>_plot_meta.json \
   --output outputs/<timestamp>/<name>_interactive.html
@@ -467,10 +468,10 @@ uv run regression_monkey_html.py \
 
 实现约定：
 
-- `regression_monkey.py` 保持轻量，只做配置、调度、汇总和调用绘图
-- `regression_monkey_py.py` 和 `regression_monkey_stata.py` 不直接生成 PNG，只写标准结果文件和绘图元数据
-- `regression_monkey_plot.py` 只读取 `*_results.csv` 和 `*_plot_meta.json`
-- `regression_monkey_html.py` 也只读取 `*_results.csv` 和 `*_plot_meta.json`
+- `__main__.py` 保持轻量，只做配置、调度、汇总和调用绘图
+- `py.py` 和 `stata.py` 不直接生成 PNG，只写标准结果文件和绘图元数据
+- `plot.py` 只读取 `*_results.csv` 和 `*_plot_meta.json`
+- `html.py` 也只读取 `*_results.csv` 和 `*_plot_meta.json`
 - 主入口绘图成功后默认删除每张图对应的 `*_results.csv` 和 `*_plot_meta.json`；`--keep-temp` 用于保留这些中间文件
 - 新增分析字段时，需要同步更新标准结果文件的读写逻辑和绘图元数据
 - 输出目录、文件名和 `sig.csv` 结构应尽量保持向后兼容
@@ -481,5 +482,5 @@ uv run regression_monkey_html.py \
 
 - 自动模式下，程序会在需要时自动生成交互固定效应列，例如 `ind#year` 或 `region#year`
 - 每个规格会基于 `y`、`x`、`controls_test`、`controls_must`、固定效应列和聚类列对应的数据进行缺失值处理
-- 默认情况下，所有规格在绘图前会按主解释变量系数从小到大排序；传入 `--order p` 或在 TOML 中设置 `order = "p"` 时，负系数规格始终排在左侧并按 `p_value` 从大到小排列，正系数规格排在右侧并按 `p_value` 从小到大排列。`--p` 仍作为 `--order p` 的兼容别名。
+- 默认情况下，所有规格在绘图前会按主解释变量系数从小到大排序；传入 `--order p` 或在 TOML 中设置 `order = "p"` 时，会按 `sign(coef) / p_value` 从小到大排序。`--p` 仍作为 `--order p` 的兼容别名。
 - 开启更多规格，尤其是 `vce_robust` 或 CGM 双向聚类规格时，总耗时会明显上升

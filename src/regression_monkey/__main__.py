@@ -647,7 +647,7 @@ def main() -> None:
     print(f"{_format_plot_progress(0, plot_progress.total)}  总导出数：{plot_progress.total}")
 
     if args.engine == "stata":
-        import regression_monkey_stata as rm_stata
+        from . import stata as rm_stata
 
         stata_results = rm_stata.run_stata_engine(
             df=df,

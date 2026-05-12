@@ -27,8 +27,8 @@ controls_must = [
 controls_test = [
   "cash",
   "growth",
-  ["audit_fee", "ln_audit_fee"],
-  ["text_len", "word_count", "sentence_count"],
+  ["analyst_cnt", "ln_analyst_cnt"],
+  ["char_count", "word_count", "sent_count"],
 ]
 
 # ── Stata 分组扩展图，可留空 ──────────────────────────────────
