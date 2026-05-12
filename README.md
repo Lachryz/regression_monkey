@@ -4,7 +4,7 @@ Author: `zhao_xun@sjtu.edu.cn` · License: [MIT](LICENSE)
 
 [中文文档](./README.zh-CN.md)
 
-> Dedicated to Yu Haoping, the one I love most.
+> Dedicated to Haoping Yu, the one I love most.
 
 A standalone specification curve analysis tool for econometric robustness checks. It enumerates all valid combinations of control variables, estimates OLS with N-way absorbed fixed effects, computes heteroskedasticity-robust, one-way clustered, or CGM two-way clustered standard errors, and exports publication-ready figures and a significance summary table.
 
