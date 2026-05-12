@@ -40,7 +40,7 @@
 
 ## 主要使用方式：配置文件驱动的自动模式
 
-推荐把变量、固定效应标识符和规格开关都写在 `config/regression_monkey_config.toml` 中，然后直接运行：
+推荐把变量、固定效应标识符和规格开关都写在 `config/config.example.toml` 中，然后直接运行：
 
 ```bash
 uv run regression-monkey
@@ -49,19 +49,19 @@ uv run regression-monkey
 如果配置文件不在默认位置，也可以显式指定：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml
+uv run regression-monkey config/config.example.toml
 ```
 
 命令行仍然可以覆盖配置文件中的参数，例如：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --dpi 600 --n-jobs 0
+uv run regression-monkey config/config.example.toml --dpi 600 --n-jobs 0
 ```
 
 默认使用 Python 引擎。也可以在 TOML 中设置 `engine = "stata"`，或在命令行指定：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine stata
+uv run regression-monkey config/config.example.toml --engine stata
 ```
 
 主入口会先调用对应分析引擎写出临时的 `*_results.csv` 和 `*_plot_meta.json`，再调用独立导出脚本生成结果。默认生成 PNG；如果希望用交互式网页替代图片，可传 `--export-format html`，或传 `--export-format both` 同时导出 PNG 和 HTML。导出成功后，主入口默认会删除这两个临时文件；如需保留用于调试或重画，请传 `--keep-temp`。
@@ -97,13 +97,11 @@ uv run regression-monkey config/regression_monkey_config.toml --engine stata
 两者语义不同：
 
 - `controls_must`
-
   - 嵌套组表示“必须包含其中之一”
   - 例如 `controls_must = ["Lev", ["ROA", "ROE"]]`
   - 每个规格都必须带 `ROA` 或 `ROE` 其中一个，不能两个都没有，也不能两个同时出现
   - 本质上相当于增加一个必选控制槽位，因此规格数乘以组大小
 - `controls_test`
-
   - 嵌套组表示“最多出现其中一个”
   - 例如 `controls_test = ["Big4", ["ListAge1", "FirmAge1"]]`
   - 每个规格可以选 `ListAge1`、或 `FirmAge1`、或两个都不选，但不能同时选两个
@@ -128,15 +126,15 @@ controls_must = [
 注意：
 
 - CLI 的 `--controls-test` / `--controls-must` 仍然只能表达平铺变量名；shell 已经会按空格拆成多个参数
-- 如果需要混合结构，请使用 `config/regression_monkey_config.toml` 或 Python API
+- 如果需要混合结构，请使用 `config/config.example.toml` 或 Python API
 
 ## 自动模式
 
-自动模式是当前推荐的主要工作流。你通常只需要维护 `config/regression_monkey_config.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
+自动模式是当前推荐的主要工作流。你通常只需要维护 `config/config.example.toml`，程序会根据其中设为 `true` 的规格开关依次运行。
 
 ### 配置文件示例
 
-仓库中提供了一个完整模板：`config/regression_monkey_example.toml`。复制后把 `data`、`y`、`x`、控制变量和固定效应列名改成你的真实字段即可。
+仓库中提供了一个完整模板：`config/config.example.toml`。复制后把 `data`、`y`、`x`、控制变量和固定效应列名改成你的真实字段即可。
 
 ```toml
 data = "path/to/data.dta"
