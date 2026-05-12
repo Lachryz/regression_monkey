@@ -25,8 +25,7 @@
 - `src/regression_monkey/stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
 - `src/regression_monkey/plot.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
 - `src/regression_monkey/html.py`：独立交互式网页脚本，只从同一批标准结果文件读取结果并生成自包含 HTML
-- `config/regression_monkey_config.toml`：推荐使用的配置文件
-- `run_regression_monkey.sh`：示例启动脚本
+- `config/config.example.toml`：推荐使用的配置文件
 
 ## 运行环境
 
