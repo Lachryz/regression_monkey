@@ -29,6 +29,7 @@ dependencies = [
 regression-monkey       = "regression_monkey.__main__:main"
 regression-monkey-html  = "regression_monkey.html:main"
 regression-monkey-plot  = "regression_monkey.plot:main"
+regression-monkey-r     = "regression_monkey.r:main"
 regression-monkey-stata = "regression_monkey.stata:main"
 
 [dependency-groups]

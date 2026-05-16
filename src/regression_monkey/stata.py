@@ -647,6 +647,7 @@ def run_stata_engine(
     on_item_ready: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
     _ = controls_test, controls_must
+    setup_t0 = perf_counter()
     df, var_map, fmt = _prepare_auto_dataframe(
         df=df,
         specs=spec_flags,
@@ -656,6 +657,7 @@ def run_stata_engine(
         region_fe=args.region_fe,
     )
     dta_path = _ensure_stata_dta(df, data_path, run_output_dir, verbose=False)
+    pending_setup_elapsed = perf_counter() - setup_t0
     outputs: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     for y_var, x_var in itertools.product(args.y, args.x):
@@ -728,8 +730,10 @@ def run_stata_engine(
                 clust_cols=clust_cols,
                 vce_label="robust" if spec_def["vce"] == "robust" else None,
             )
+            base_elapsed = perf_counter() - spec_t0
             if grouping_variables:
                 for grouping_idx, (grouping_scope, grouping_variable) in enumerate(grouping_variables):
+                    grouping_t0 = perf_counter()
                     grouping_path_part = _grouping_path_part(grouping_variable, grouping_scope)
                     grouping_display_name = _grouping_display_name(grouping_variable, grouping_scope)
                     grouped_do_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_grouped.do"
@@ -858,6 +862,10 @@ def run_stata_engine(
                         grouping_variable=grouping_display_name,
                         grouped_records=grouped_plot_records,
                     )
+                    elapsed_seconds = base_elapsed + (perf_counter() - grouping_t0)
+                    if pending_setup_elapsed:
+                        elapsed_seconds += pending_setup_elapsed
+                        pending_setup_elapsed = 0.0
                     item = {
                         "records": records,
                         "sig_rows": grouped_sig_rows + interaction_sig_rows,
@@ -867,7 +875,7 @@ def run_stata_engine(
                         "meta_path": grouped_meta_path,
                         "output_path": grouped_output_path,
                         "fe_type": tuple(spec_def["fe_keys"]),
-                        "elapsed_seconds": perf_counter() - spec_t0,
+                        "elapsed_seconds": elapsed_seconds,
                     }
                     if on_item_ready is not None:
                         on_item_ready(item)
@@ -921,8 +929,9 @@ def run_stata_engine(
                     "meta_path": meta_path,
                     "output_path": output_path,
                     "fe_type": tuple(spec_def["fe_keys"]),
-                    "elapsed_seconds": perf_counter() - spec_t0,
+                    "elapsed_seconds": base_elapsed + pending_setup_elapsed,
                 }
+                pending_setup_elapsed = 0.0
                 if on_item_ready is not None:
                     on_item_ready(item)
                     item["plotted"] = True

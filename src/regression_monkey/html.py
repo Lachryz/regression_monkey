@@ -26,7 +26,7 @@ from . import py as rm_py
 #   p < 0.01  →  crimson
 #   p < 0.05  →  forest green
 #   p < 0.10  →  steel blue
-#   n.s.      →  warm gray
+#   n.s.      →  black
 
 _SIG_COLOR = ["#111827", "#1D4ED8", "#15803D", "#B91C1C"]  # nsig, 10%, 5%, 1%
 _SIG_BG = [
@@ -326,7 +326,7 @@ def html_from_files(
     ).with_suffix(".html")
     out = pathlib.Path(output_path) if output_path is not None else default_out
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(_build_html(payload), encoding="utf-8")
+    out.write_text(_build_canvas_html(payload), encoding="utf-8")
     return out
 
 
@@ -356,6 +356,7 @@ def payload_from_files(
         "controlsTestNames": list(meta.get("controls_test_flat", [])),
         "y": meta.get("y", ""),
         "x": meta.get("x", ""),
+        "engine": meta.get("engine", ""),
         "specName": meta.get("spec_name", ""),
         "outputPath": str(meta.get("output_path", results_file.with_suffix(".html"))),
         "matrixControls": matrix_controls,
@@ -398,7 +399,7 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
             "x": str(payload.get("x", "")),
             "spec": spec_label,
             "title": str(payload.get("title", "")),
-            "srcdoc": _build_html(payload),
+            "srcdoc": _build_canvas_html(payload),
         })
     data_json = _json_for_html(views)
     title = "Regression Monkey Interactive"
@@ -487,7 +488,7 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
     }}
   </style>
 </head>
-<body>
+<body class="mode-compact">
   <div class="bundle-toolbar">
     <div class="bundle-brand">Regression Monkey</div>
     <div class="bundle-field">
@@ -583,6 +584,8 @@ def _build_html(payload: dict[str, Any]) -> str:
     controls_test_line = _payload_controls_test_line_html(payload)
     elapsed = payload.get("elapsedSeconds")
     elapsed_text = f"Elapsed = {float(elapsed):.2f}s" if elapsed is not None else "Elapsed = n/a"
+    engine = str(payload.get("engine") or "").strip()
+    engine_text = f"engine = {html.escape(engine)}" if engine else ""
     n = len(payload["records"])
     n1 = sum(1 for r in payload["records"] if r["star"] == 3)
     n5 = sum(1 for r in payload["records"] if r["star"] == 2)
@@ -1056,9 +1059,10 @@ def _build_html(payload: dict[str, Any]) -> str:
     }}
 
     .star-zero-line {{
-      stroke: #111827;
-      stroke-width: .8;
-      opacity: .78;
+      stroke: #EF4444;
+      stroke-width: 1.2;
+      stroke-dasharray: 5 4;
+      opacity: .55;
     }}
 
     .star-cell.active {{
@@ -1411,13 +1415,14 @@ def _build_html(payload: dict[str, Any]) -> str:
     }}
   </style>
 </head>
-<body>
+<body class="mode-compact">
 
 <header>
   <div class="h-row">
     <div class="title-stack">
       <div class="title-meta">
         <span>{n} specs</span>
+        {f'<span class="sep"></span><span>{engine_text}</span>' if engine_text else ""}
         <span class="sep"></span>
         <span>{elapsed_text}</span>
       </div>
@@ -1445,7 +1450,7 @@ def _build_html(payload: dict[str, Any]) -> str:
     <span class="rm-chip on" data-sig="3"><i style="background:#B91C1C"></i>p&lt;.01</span>
     <span class="rm-chip on" data-sig="2"><i style="background:#15803D"></i>p&lt;.05</span>
     <span class="rm-chip on" data-sig="1"><i style="background:#1D4ED8"></i>p&lt;.10</span>
-    <span class="rm-chip on" data-sig="0"><i style="background:#9CA3AF"></i>n.s.</span>
+    <span class="rm-chip on" data-sig="0"><i style="background:#111827"></i>n.s.</span>
     <span class="rm-divider"></span>
     <span class="rm-lbl">CI bands</span>
     <span class="rm-chip on" data-ci="90"><i style="background:#9CA3AF;opacity:.55"></i>90%</span>
@@ -1810,22 +1815,15 @@ def _build_html(payload: dict[str, Any]) -> str:
     const origCol = {{}};
     records.forEach((r, pos) => {{ origCol[r.index] = pos; }});
 
-    const anchors = [];
-    records.forEach(r => {{
-      const pt = svg.querySelector(`.point[data-index="${{r.index}}"]`);
-      if (pt) anchors.push({{ coef: Number(r.coef), y: Number(pt.getAttribute("cy")) }});
-    }});
-    let yCoef = v => coefY + (coefBottom - coefY) / 2;
-    for (let i = 0; i < anchors.length; i++) {{
-      for (let j = i + 1; j < anchors.length; j++) {{
-        if (Math.abs(anchors[j].coef - anchors[i].coef) < 1e-12) continue;
-        const slope = (anchors[j].y - anchors[i].y) / (anchors[j].coef - anchors[i].coef);
-        const intercept = anchors[i].y - slope * anchors[i].coef;
-        yCoef = v => slope * v + intercept;
-        i = anchors.length;
-        break;
+    const coefMin = Number(svg.dataset.coefMin);
+    const coefMax = Number(svg.dataset.coefMax);
+    const yCoef = v => {{
+      if (!Number.isFinite(coefMin) || !Number.isFinite(coefMax) || Math.abs(coefMax - coefMin) < 1e-12) {{
+        return coefY + (coefBottom - coefY) / 2;
       }}
-    }}
+      const t = (Number(v) - coefMin) / (coefMax - coefMin);
+      return coefBottom - t * (coefBottom - coefY);
+    }};
 
     const state = {{
       sort: "signed_p",
@@ -2176,6 +2174,7 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         f' data-content-width="{_fmt(content_w)}" data-plot-right="{_fmt(left + content_w)}"'
         f' data-star-y="{_fmt(star_y)}" data-star-bottom="{_fmt(star_y + star_h)}"'
         f' data-coef-y="{_fmt(coef_y)}" data-coef-bottom="{_fmt(coef_y + coef_h)}"'
+        f' data-coef-min="{_fmt(clo)}" data-coef-max="{_fmt(chi)}"'
         f' data-matrix-y="{_fmt(matrix_y)}" data-matrix-bottom="{_fmt(matrix_y + matrix_h)}"'
         f' data-obs-y="{_fmt(obs_y)}" data-obs-bottom="{_fmt(obs_y + obs_h)}"'
         f' xmlns="http://www.w3.org/2000/svg">'
@@ -2294,9 +2293,9 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                         "x2": left + plot_w,
                         "y1": _fmt(y_tick),
                         "y2": _fmt(y_tick),
-                        "stroke": "#F3F4F6" if label != "mean" else "#9CA3AF",
+                        "stroke": "#F3F4F6",
                         "stroke-width": "0.7",
-                        "class": "plot-x2",
+                        "class": "zero-line plot-x2" if label == "mean" else "plot-x2",
                     },
                 )
             )
@@ -2458,7 +2457,16 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
         y0 = matrix_y + matrix_pad + s * row_h
         y1 = matrix_y + matrix_pad + (e + 1) * row_h
         xm = left - 18
-        dash = "4 3" if str(grp.get("kind", "")) == "controls_test" else None
+        is_test = str(grp.get("kind", "")) == "controls_test"
+        if is_test and y1 - y0 > 6:
+            y0 += 2
+            y1 -= 2
+        dash = "4 3" if is_test else None
+        marker_color = (
+            alt_group_color_by_control.get(str(controls[s]), "#6B7280")
+            if is_test
+            else "#6B7280"
+        )
         for attrs, line_dash in [
             ({"x1": xm, "x2": xm, "y1": _fmt(y0), "y2": _fmt(y1)}, dash),
             ({"x1": _fmt(xm - 6), "x2": _fmt(xm + 6), "y1": _fmt(y0), "y2": _fmt(y0)}, None),
@@ -2470,7 +2478,7 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
                     {
                         **attrs,
                         "class": "alt-marker sticky-x",
-                        "stroke": "#6B7280",
+                        "stroke": marker_color,
                         "stroke-width": "1.4",
                         "stroke-linecap": "square",
                         "stroke-dasharray": line_dash,
@@ -2730,6 +2738,1642 @@ def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
 
     p.append("</svg>")
     return "\n  ".join(p), width, height
+
+
+# ── Canvas HTML builder ───────────────────────────────────────────────────────
+
+
+def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
+    """Generate a self-contained Canvas-based interactive HTML.
+
+    Key differences from _build_html / _build_svg:
+    - Data is zlib-compressed + base64-encoded (reduces payload size ~70%).
+    - Rendering uses two stacked <canvas> elements: cv-main (static) and
+      cv-ov (overlay for hover/pin highlights).
+    - Virtual rendering skips columns outside the visible viewport + buffer,
+      so 8000+ spec charts stay fast.
+    - No SVG elements are emitted; the entire chart is drawn imperatively.
+    """
+    import zlib as _zlib
+
+    records = list(payload["records"])
+    controls = list(payload["matrixControls"])
+    alt_groups = list(payload.get("matrixAltGroups", []))
+
+    n = len(records)
+    n_controls = len(controls)
+    compact_threshold = 1024
+    compact_enabled = n > compact_threshold
+    initial_mode = "compact" if compact_enabled else "detail"
+    body_attrs = ' class="mode-compact"' if compact_enabled else ""
+    compact_button_attrs = (
+        ' class="active" aria-pressed="true"'
+        if compact_enabled
+        else ' aria-pressed="false" disabled'
+    )
+    detail_button_attrs = (
+        ' aria-pressed="false"'
+        if compact_enabled
+        else ' class="active" aria-pressed="true"'
+    )
+    compact_enabled_js = "true" if compact_enabled else "false"
+
+    # ── Geometry (mirrors _build_svg) ─────────────────────────────────────────
+    label_chars = max([len(str(c)) for c in controls] + [8])
+    grp_pad = 46 if alt_groups else 0
+    left = max(160, min(440, 76 + label_chars * 7 + grp_pad))
+    right = 82
+    star_h = 66
+    coef_h = 296
+    row_h = 18
+    obs_h = 88
+    gap = 12
+    x_step = 7 if n <= 1600 else 5
+    matrix_h = max(row_h, n_controls * row_h)
+
+    star_y = 20
+    coef_y = star_y + star_h + gap
+    matrix_y = coef_y + coef_h + gap
+    obs_y = matrix_y + matrix_h + gap + 12
+    total_h = int(obs_y + obs_h + 22)
+
+    # ── Value ranges ──────────────────────────────────────────────────────────
+    if records:
+        clo = min(float(r["ci99_lo"]) for r in records)
+        chi = max(float(r["ci99_hi"]) for r in records)
+        if clo == chi:
+            clo -= 1.0
+            chi += 1.0
+        else:
+            pad = (chi - clo) * 0.09
+            clo -= pad
+            chi += pad
+        obs_values = [int(r["obs"]) for r in records]
+        obs_min_v = min(obs_values)
+        obs_max_v = max(obs_values)
+        obs_mean_v = sum(obs_values) / len(obs_values)
+    else:
+        clo, chi, obs_min_v, obs_max_v, obs_mean_v = -1.0, 1.0, 0, 1, 0.0
+
+    # Compute grid tick values (5 evenly spaced, top→bottom)
+    grid_coefs = [chi - (chi - clo) * j / 4 for j in range(5)]
+
+    # Alt-group color assignment
+    alt_group_color_by_control: dict[str, str] = {}
+    color_idx_py = 0
+    for grp in alt_groups:
+        if str(grp.get("kind", "")) != "controls_test":
+            continue
+        s = int(grp.get("start", -1))
+        e = int(grp.get("end", -1))
+        if s < 0 or e <= s or e >= len(controls):
+            continue
+        fill = _ALT_GROUP_COLORS[color_idx_py % len(_ALT_GROUP_COLORS)]
+        color_idx_py += 1
+        for row in range(s, e + 1):
+            alt_group_color_by_control[str(controls[row])] = fill
+
+    # Three-star starred controls (yellow highlight)
+    from . import py as _rm_py  # already imported at module level, reuse below
+    controls_test_names_set = set(_payload_controls_test_names(payload))
+    three_star_records = [r for r in records if int(r.get("star", 0)) == 3]
+    starred_controls: set[str] = {
+        name
+        for name in controls
+        if name in controls_test_names_set
+        and three_star_records
+        and all(name in set(r.get("included_matrix_controls", [])) for r in three_star_records)
+    }
+
+    # Header info
+    title_esc = html.escape(str(payload.get("title", "")))
+    y_title = html.escape(str(payload.get("y", "")))
+    x_title = html.escape(str(payload.get("x", "")))
+    subtitle = html.escape(str(payload.get("subtitle") or ""))
+    controls_must_line_s = html.escape(_payload_controls_must_line(payload))
+    controls_test_line_html_s = _payload_controls_test_line_html(payload)
+    elapsed = payload.get("elapsedSeconds")
+    elapsed_text = f"Elapsed = {float(elapsed):.2f}s" if elapsed is not None else "Elapsed = n/a"
+    engine = str(payload.get("engine") or "").strip()
+    engine_text = f"engine = {html.escape(engine)}" if engine else ""
+    n1 = sum(1 for r in records if r.get("star") == 3)
+    n5 = sum(1 for r in records if r.get("star") == 2)
+    n10 = sum(1 for r in records if r.get("star") == 1)
+
+    # Left sidebar labels (Python-generated static HTML)
+    tick_items: list[str] = []
+    for j in range(5):
+        frac = j / 4
+        gv = chi - (chi - clo) * frac
+        # y position within the canvas (in px from top of canvas)
+        ypos = coef_y + coef_h * frac
+        tick_items.append(
+            f'<div class="tick-lbl coef-tick" style="top:{ypos - 6:.1f}px">{gv:.3f}</div>'
+        )
+
+    obs_tick_data = [
+        ("max", float(obs_max_v)),
+        ("mean", float(obs_mean_v)),
+        ("min", float(obs_min_v)),
+    ]
+
+    def _obs_scale(v: float) -> float:
+        lo_o = min(float(obs_min_v), float(obs_mean_v), float(obs_max_v))
+        hi_o = max(float(obs_min_v), float(obs_mean_v), float(obs_max_v))
+        if lo_o == hi_o:
+            lo_o -= 1
+            hi_o += 1
+        else:
+            p_ = (hi_o - lo_o) * 0.06
+            lo_o -= p_
+            hi_o += p_
+        if hi_o == lo_o:
+            return obs_y + obs_h / 2
+        return obs_y + obs_h - ((v - lo_o) / (hi_o - lo_o)) * obs_h
+
+    for label_o, val_o in obs_tick_data:
+        ypos_o = _obs_scale(val_o)
+        tick_items.append(
+            f'<div class="tick-lbl obs-tick" style="top:{ypos_o - 6:.1f}px">{val_o:,.0f}</div>'
+        )
+
+    control_label_items: list[str] = []
+    for row, name in enumerate(controls):
+        ry = matrix_y + row * row_h
+        # y center for the label
+        label_y_center = ry + row_h * 0.65
+        group_color = alt_group_color_by_control.get(str(name), "")
+        color_style = f"color:{group_color};" if group_color else ""
+        highlight_class = " starred" if name in starred_controls else ""
+        control_label_items.append(
+            f'<div class="tick-lbl ctrl-lbl{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
+            f' style="top:{label_y_center - 7:.1f}px;{color_style}">{html.escape(str(name))}</div>'
+        )
+
+    # Panel side-labels (STARS / COEF / CONTROLS / OBS) — rotated 90°
+    panels_py = [
+        (star_y, star_h, "STARS"),
+        (coef_y, coef_h, "COEF"),
+        (matrix_y, matrix_h, "CONTROLS"),
+        (obs_y, obs_h, "OBS"),
+    ]
+    left_sidebar_html = "\n".join(tick_items + control_label_items)
+
+    # Alt-group bracket markers HTML (inside the left sidebar, absolute pos)
+    alt_marker_items: list[str] = []
+    for grp in alt_groups:
+        s = int(grp.get("start", -1))
+        e = int(grp.get("end", -1))
+        if s < 0 or e < s or e >= len(controls):
+            continue
+        y0 = matrix_y + s * row_h
+        y1 = matrix_y + (e + 1) * row_h
+        is_test = str(grp.get("kind", "")) == "controls_test"
+        if is_test and y1 - y0 > 6:
+            y0 += 2
+            y1 -= 2
+        marker_color = (
+            alt_group_color_by_control.get(str(controls[s]), "#6B7280")
+            if is_test
+            else "#6B7280"
+        )
+        marker_class = "alt-marker is-dashed" if is_test else "alt-marker"
+        alt_marker_items.append(
+            f'<div class="{marker_class}" style="top:{y0:.1f}px;height:{y1-y0:.1f}px;--alt-marker-color:{marker_color};"></div>'
+        )
+
+    alt_markers_html = "\n".join(alt_marker_items)
+
+    # ── Compress payload JSON ──────────────────────────────────────────────────
+    json_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    compressed = base64.b64encode(_zlib.compress(json_bytes, level=9)).decode("ascii")
+
+    # ── Embed font ────────────────────────────────────────────────────────────
+    embedded_font_css = _embedded_courier_new_css()
+
+    # Pre-compute JSON fragments for JS constants
+    alt_groups_js = _json_for_html(alt_groups)
+    controls_js = _json_for_html(controls)
+    alt_group_colors_js = _json_for_html(_ALT_GROUP_COLORS)
+    alt_group_color_map_js = _json_for_html(alt_group_color_by_control)
+    starred_controls_js = _json_for_html(list(starred_controls))
+    sig_colors_js = json.dumps(_SIG_COLOR)
+    sig_bg_js = json.dumps(_SIG_BG)
+    sig_labels_js = json.dumps(_SIG_LABEL)
+
+    # ── Assemble HTML ─────────────────────────────────────────────────────────
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title_esc}</title>
+  <style>
+    {embedded_font_css}
+    :root {{
+      --ink:        #111827;
+      --ink-2:      #374151;
+      --muted:      #6B7280;
+      --muted-2:    #9CA3AF;
+      --line:       #E5E7EB;
+      --line-2:     #F3F4F6;
+      --bg:         #FFFFFF;
+      --bg-2:       #F9FAFB;
+      --active:     #7C3AED;
+      --sig1:       #B91C1C;
+      --sig5:       #15803D;
+      --sig10:      #1D4ED8;
+      --nsig:       #111827;
+      --mono: "RM Courier New", "Courier New", monospace;
+      --sans: "RM Courier New", "Courier New", monospace;
+      --r-sm:  4px;
+      --r-md:  8px;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      --header-pad-x: 22px;
+    }}
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{ height: 100%; }}
+    body {{
+      font-family: var(--sans);
+      font-size: 13px;
+      color: var(--ink);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }}
+    header {{
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 11px var(--header-pad-x) 9px;
+      background: rgba(255,255,255,.95);
+      backdrop-filter: saturate(180%) blur(14px);
+      -webkit-backdrop-filter: saturate(180%) blur(14px);
+    }}
+    header::after {{
+      content: "";
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 1px;
+      background: var(--line);
+      pointer-events: none;
+    }}
+    .h-row {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .title-stack {{ display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }}
+    .title-meta {{
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 3px 10px;
+      border: 1px solid var(--line); border-radius: 99px;
+      background: var(--line-2);
+      font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+      color: var(--muted); white-space: nowrap;
+    }}
+    .title-meta .sep {{ width: 1px; height: 11px; background: var(--line); display: inline-block; }}
+    h1 {{ font-family: var(--mono); font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); line-height: 1.35; }}
+    .kbd-row {{ margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted-2); }}
+    kbd {{
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 18px; height: 18px; padding: 0 4px;
+      border: 1px solid var(--line); border-radius: 3px;
+      background: var(--line-2); font-family: var(--sans); font-size: 9.5px;
+      color: var(--ink-2); box-shadow: 0 1px 0 var(--line);
+    }}
+    .subtitle {{ margin-top: 2px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: pre-wrap; word-break: break-word; }}
+    .ctrl-group-title {{ font-weight: 700; }}
+    .meta-row {{ margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    .rm-tools {{
+      position: relative; margin-top: 10px; padding-top: 10px;
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    }}
+    .rm-tools::before {{
+      content: "";
+      position: absolute;
+      left: calc(-1 * var(--header-pad-x)); right: calc(-1 * var(--header-pad-x));
+      top: 0; height: 1px; background: var(--line); pointer-events: none;
+    }}
+    .rm-lbl {{ color: var(--muted-2); text-transform: uppercase; letter-spacing: .08em; font-weight: 600; font-size: 9.5px; }}
+    .rm-seg {{ display: inline-flex; background: var(--line-2); border-radius: 5px; padding: 2px; gap: 2px; }}
+    .rm-seg button {{
+      background: transparent; border: 0; outline: none;
+      font-family: var(--mono); font-size: 10.5px;
+      padding: 3px 8px; border-radius: 4px;
+      color: var(--muted); cursor: pointer; font-weight: 500;
+    }}
+    .rm-seg button.active, .rm-seg button[aria-pressed="true"] {{
+      background: #FFFFFF; color: var(--ink);
+      box-shadow: 0 1px 2px rgba(0,0,0,.06);
+    }}
+    .rm-seg button:focus, .rm-seg button:focus-visible {{ outline: none; }}
+    .rm-seg button:disabled {{
+      opacity: .42;
+      cursor: default;
+      background: transparent;
+      box-shadow: none;
+    }}
+    body.mode-compact .info-panel {{ display: none; }}
+    body.mode-compact #sb-track {{ display: none; }}
+    body.mode-compact #cv-wrap {{ cursor: default; }}
+    body.mode-compact #cv-ov {{ pointer-events: none; }}
+    .rm-chip {{
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 8px; border: 1px solid var(--line); border-radius: 99px;
+      color: var(--muted-2); background: #FFFFFF;
+      cursor: pointer; user-select: none; font-size: 10px;
+    }}
+    .rm-chip i {{ width: 7px; height: 7px; border-radius: 50%; display: inline-block; }}
+    .rm-chip.on {{ border-color: var(--ink); color: var(--ink); background: var(--bg); }}
+    .rm-divider {{ width: 1px; height: 14px; background: var(--line); }}
+    .main-body {{ flex: 1; display: flex; min-height: 0; overflow: hidden; }}
+    /* Chart column */
+    #chart-col {{ flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; }}
+    /* Vertical scroll wrapper — contains canvas + left sidebar, scrolls vertically */
+    #chart-vscroll {{ flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; position: relative; }}
+    /* Left sidebar */
+    #left-sb {{
+      position: absolute; left: 0; top: 0;
+      width: {left}px;
+      height: {total_h}px;
+      pointer-events: none;
+      z-index: 5;
+      background: #fff;
+    }}
+    .tick-lbl {{
+      position: absolute;
+      right: 8px;
+      font-family: var(--mono); font-size: 9.5px; color: #9CA3AF;
+      white-space: nowrap;
+      line-height: 1.2;
+    }}
+    .ctrl-lbl {{
+      position: absolute;
+      right: 8px;
+      max-width: calc(100% - 52px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: var(--mono); font-size: 10px; color: #4B5563;
+      white-space: nowrap;
+      line-height: 1.2;
+      z-index: 2;
+    }}
+    .ctrl-lbl.starred {{ background: #FEF3C7; border-radius: 2px; padding: 0 2px; }}
+    .alt-marker {{
+      position: absolute;
+      left: 16px;
+      width: 12px;
+      z-index: 8;
+      --alt-marker-color: #6B7280;
+      background-image: linear-gradient(var(--alt-marker-color), var(--alt-marker-color));
+      background-position: center top;
+      background-repeat: no-repeat;
+      background-size: 1.4px 100%;
+    }}
+    .alt-marker.is-dashed {{
+      background-image: repeating-linear-gradient(to bottom, var(--alt-marker-color) 0 3px, transparent 3px 6px);
+    }}
+    .alt-marker::before, .alt-marker::after {{
+      content: "";
+      position: absolute;
+      left: 0;
+      width: 12px;
+      border-top: 1.4px solid var(--alt-marker-color);
+    }}
+    .alt-marker::before {{ top: 0; }}
+    .alt-marker::after {{ bottom: 0; }}
+    /* Canvas wrap */
+    #cv-wrap {{
+      position: relative;
+      height: {total_h}px;
+      overflow: hidden;
+      cursor: crosshair;
+    }}
+    #cv-main, #cv-ov {{
+      position: absolute; top: 0; left: 0;
+      display: block;
+    }}
+    #cv-ov {{ z-index: 2; }}
+    /* Scrollbar */
+    #sb-track {{
+      height: 10px;
+      margin: 2px {right}px 4px {left}px;
+      background: var(--line-2);
+      border-radius: 5px;
+      position: relative;
+      cursor: pointer;
+      flex-shrink: 0;
+    }}
+    #sb-thumb {{
+      position: absolute; top: 0; height: 100%;
+      background: #9CA3AF; border-radius: 5px;
+      min-width: 20px;
+      cursor: grab;
+    }}
+    #sb-thumb:active {{ cursor: grabbing; }}
+    /* Info panel */
+    .info-panel {{
+      width: 300px; flex-shrink: 0;
+      border-left: 1px solid var(--line);
+      background: var(--bg); overflow-y: auto;
+    }}
+    .panel-placeholder {{ padding: 32px 16px; color: var(--muted-2); font-size: 11px; text-align: center; line-height: 1.7; }}
+    .panel-head {{
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px 8px; border-bottom: 1px solid var(--line);
+    }}
+    .panel-title {{ font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--ink); }}
+    .panel-sig {{
+      display: inline-flex; align-items: center;
+      padding: 1px 7px; border-radius: 99px;
+      font-size: 10px; font-weight: 600; letter-spacing: .01em;
+    }}
+    .panel-table {{
+      display: grid; grid-template-columns: auto 1fr;
+      gap: 2px 10px; padding: 10px 14px;
+    }}
+    .panel-key {{ color: var(--muted); font-size: 10.5px; align-self: center; }}
+    .panel-val {{ font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); font-weight: 500; text-align: right; }}
+    .panel-divider {{ grid-column: 1 / -1; height: 1px; border-top: 1px dotted var(--line); margin: 4px 0; }}
+    .panel-controls {{ grid-column: 1 / -1; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.45; }}
+    .panel-controls em {{ font-style: normal; color: var(--ink-2); }}
+    .panel-coefs {{ grid-column: 1 / -1; display: flex; flex-direction: column; margin-top: 2px; }}
+    .panel-coefs-head {{
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--muted-2); font-weight: 600;
+      padding-bottom: 6px; margin-bottom: 4px;
+    }}
+    .panel-coefs-meta {{ font-weight: 500; opacity: .85; letter-spacing: 0; text-transform: none; }}
+    .coef-group-label {{
+      font-family: var(--mono); font-size: 8.5px; color: var(--muted-2);
+      text-transform: uppercase; letter-spacing: .12em;
+      padding: 8px 14px 4px; font-weight: 600;
+      border-top: 1px solid var(--line); margin: 6px -14px 0;
+    }}
+    .coef-group-label .grp-count {{ color: var(--muted); font-weight: 500; letter-spacing: 0; }}
+    .coef-row {{
+      display: grid; grid-template-columns: minmax(0, 1fr) 68px 74px;
+      gap: 12px; align-items: baseline;
+      padding: 4px; border-radius: 3px;
+      font-family: var(--mono); font-size: 10.5px; line-height: 1.25;
+      transition: background .12s;
+    }}
+    .coef-row + .coef-row {{ border-top: 1px dotted var(--line); }}
+    .coef-row:hover {{ background: var(--bg-2); }}
+    .coef-row.is-test .coef-name {{ font-weight: 600; }}
+    .coef-name-wrap {{ display: inline-flex; align-items: center; gap: 6px; min-width: 0; }}
+    .coef-badge {{
+      width: 22px; height: 18px; border-radius: 3px;
+      display: inline-flex; align-items: center; justify-content: center;
+      flex: 0 0 22px; font-family: var(--mono); font-size: 9px; font-weight: 700;
+      line-height: 1; font-variant-numeric: tabular-nums;
+      border: 1px solid rgba(17,24,39,.08);
+    }}
+    .coef-badge.pos {{ background: #F7DADA; }}
+    .coef-badge.neg {{ background: #DCEBFA; }}
+    .coef-badge.zero {{ background: #E5E7EB; }}
+    .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
+    .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
+    .coef-val {{ color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; font-size: 10.5px; letter-spacing: 0; min-width: 0; }}
+    .coef-val.placeholder {{ color: var(--muted-2); }}
+    .coef-val.pos {{ color: #B91C1C; }}
+    .coef-val.neg {{ color: #1D4ED8; }}
+    .coef-p {{ display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; justify-content: flex-end; min-width: 0; white-space: nowrap; }}
+    .coef-p.placeholder {{ color: var(--muted-2); }}
+    .coef-p .coef-stars {{ font-weight: 700; letter-spacing: 0; font-size: 11px; color: var(--ink-2); }}
+    .coef-empty {{ font-family: var(--mono); font-size: 10px; color: var(--muted-2); padding: 6px 4px; font-style: italic; }}
+    @media print {{
+      header {{ position: static; border-bottom: 1px solid #ccc; }}
+      .info-panel {{ display: none; }}
+    }}
+  </style>
+</head>
+<body{body_attrs}>
+
+<header>
+  <div class="h-row">
+    <div class="title-stack">
+      <div class="title-meta">
+        <span>{n} specs</span>
+        {f'<span class="sep"></span><span>{engine_text}</span>' if engine_text else ""}
+        <span class="sep"></span>
+        <span>{elapsed_text}</span>
+      </div>
+      <h1>Y: {y_title}<br>X: {x_title}</h1>
+    </div>
+    <div class="kbd-row">
+      Navigate <kbd>&#8592;</kbd><kbd>&#8594;</kbd>&nbsp; Dismiss <kbd>Esc</kbd>
+    </div>
+  </div>
+  {f'<div class="subtitle">{subtitle}</div>' if subtitle else ""}
+  {f'<div class="subtitle">{controls_must_line_s}</div>' if controls_must_line_s else ""}
+  {f'<div class="subtitle">{controls_test_line_html_s}</div>' if controls_test_line_html_s else ""}
+  <div class="meta-row">
+    <span style="font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--ink-2)">@Lachryz</span>
+  </div>
+  <div class="rm-tools">
+    <span class="rm-lbl">Sort</span>
+    <div class="rm-seg" id="rmSort">
+      <button type="button" data-v="coef" aria-pressed="false">coef</button>
+      <button type="button" data-v="obs" aria-pressed="false">obs</button>
+      <button type="button" data-v="signed_p" class="active" aria-pressed="true">sig(coef)/p</button>
+    </div>
+    <span class="rm-lbl">Mode</span>
+    <div class="rm-seg" id="rmMode">
+      <button type="button" data-v="compact"{compact_button_attrs}>COMPACT</button>
+      <button type="button" data-v="detail"{detail_button_attrs}>DETAIL</button>
+    </div>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">Significance</span>
+    <span class="rm-chip on" data-sig="3"><i style="background:#B91C1C"></i>p&lt;.01</span>
+    <span class="rm-chip on" data-sig="2"><i style="background:#15803D"></i>p&lt;.05</span>
+    <span class="rm-chip on" data-sig="1"><i style="background:#1D4ED8"></i>p&lt;.10</span>
+    <span class="rm-chip on" data-sig="0"><i style="background:#111827"></i>n.s.</span>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">CI bands</span>
+    <span class="rm-chip on" data-ci="90"><i style="background:#9CA3AF;opacity:.55"></i>90%</span>
+    <span class="rm-chip on" data-ci="95"><i style="background:#6B7280;opacity:.7"></i>95%</span>
+    <span class="rm-chip on" data-ci="99"><i style="background:#374151;opacity:.85"></i>99%</span>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">Guides</span>
+    <span class="rm-chip on" data-special="full"><i style="background:#FF2F92"></i>ALL TEST</span>
+    <span class="rm-chip on" data-special="nocontrol"><i style="background:#ff8c00"></i>NO TEST</span>
+  </div>
+</header>
+
+<div class="main-body">
+  <div id="chart-col">
+    <!-- Vertical scroll wrapper: left sidebar + canvas scroll together -->
+    <div id="chart-vscroll">
+      <!-- Left sidebar: tick labels, control labels -->
+      <div id="left-sb">
+        {left_sidebar_html}
+        {alt_markers_html}
+      </div>
+      <!-- Canvas area -->
+      <div id="cv-wrap">
+        <canvas id="cv-main"></canvas>
+        <canvas id="cv-ov"></canvas>
+      </div>
+    </div>
+    <!-- Custom horizontal scrollbar — stays fixed at bottom -->
+    <div id="sb-track"><div id="sb-thumb"></div></div>
+  </div>
+  <div class="info-panel" id="info-panel">
+    <div class="panel-placeholder" id="panel-placeholder">Hover or click<br>a specification</div>
+    <div id="panel-content" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Compressed payload -->
+<script>const _RAW = '{compressed}';</script>
+
+<script>
+(async function() {{
+  /* ── Decompress payload ─────────────────────────────────── */
+  async function loadData() {{
+    const b64 = _RAW;
+    const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const ds = new DecompressionStream('deflate');
+    const writer = ds.writable.getWriter();
+    writer.write(bin);
+    writer.close();
+    const buf = await new Response(ds.readable).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }}
+
+  const DATA = await loadData();
+  const records = DATA.records;
+  const N = records.length;
+  const COMPACT_THRESHOLD = {compact_threshold};
+  const COMPACT_ENABLED = {compact_enabled_js};
+
+  /* ── Constants (must match Python geometry) ─────────────── */
+  const LEFT        = {left};
+  const RIGHT       = {right};
+  const STAR_Y      = {star_y};
+  const STAR_H      = {star_h};
+  const COEF_Y      = {coef_y};
+  const COEF_H      = {coef_h};
+  const MATRIX_Y    = {matrix_y};
+  const MATRIX_H    = {matrix_h};
+  const OBS_Y       = {obs_y};
+  const OBS_H       = {obs_h};
+  const ROW_H       = {row_h};
+  const TOTAL_H     = {total_h};
+  const X_STEP      = {x_step};
+  const COEF_LO     = {clo!r};
+  const COEF_HI     = {chi!r};
+  const OBS_MIN     = {obs_min_v!r};
+  const OBS_MAX     = {obs_max_v!r};
+  const OBS_MEAN    = {obs_mean_v!r};
+
+  const STAR_POS    = "#D98A8A";
+  const STAR_NEG    = "#7EA6D9";
+  const OBS_FILL    = "#9CA3AF";
+  const SPECIAL_FULL    = "#FF2F92";
+  const SPECIAL_NOTEST  = "#ff8c00";
+  const ACTIVE_COL  = "#7C3AED";
+
+  const SIG_COLOR   = {sig_colors_js};
+  const SIG_BG      = {sig_bg_js};
+  const SIG_LABEL   = {sig_labels_js};
+
+  const ALT_GROUP_COLOR_MAP = {alt_group_color_map_js};
+  const STARRED_CONTROLS    = new Set({starred_controls_js});
+  const MATRIX_CONTROLS     = {controls_js};
+
+  /* ── Scale helpers ──────────────────────────────────────── */
+  function cy(v) {{
+    if (Math.abs(COEF_HI - COEF_LO) < 1e-12) return COEF_Y + COEF_H / 2;
+    const t = (v - COEF_LO) / (COEF_HI - COEF_LO);
+    return COEF_Y + COEF_H - t * COEF_H;
+  }}
+
+  function obsY(v) {{
+    let lo = Math.min(OBS_MIN, OBS_MEAN, OBS_MAX);
+    let hi = Math.max(OBS_MIN, OBS_MEAN, OBS_MAX);
+    if (lo === hi) {{ lo -= 1; hi += 1; }} else {{ const p = (hi - lo) * 0.06; lo -= p; hi += p; }}
+    if (Math.abs(hi - lo) < 1e-12) return OBS_Y + OBS_H / 2;
+    return OBS_Y + OBS_H - ((v - lo) / (hi - lo)) * OBS_H;
+  }}
+
+  /* ── State ──────────────────────────────────────────────── */
+  const state = {{
+    sort: 'signed_p',
+    mode: '{initial_mode}',
+    sigFilter: new Set([0, 1, 2, 3]),
+    showCI: {{ 99: true, 95: true, 90: true }},
+    showFull: true,
+    showNotest: true,
+    scrollX: 0,
+  }};
+  let sortedOrder = [];  // indices into records[]
+  let activeIdx = -1;
+  let pinnedIdx = -1;
+
+  /* ── DOM refs ───────────────────────────────────────────── */
+  const chartVScroll = document.getElementById('chart-vscroll');
+  const cvWrap     = document.getElementById('cv-wrap');
+  const cvMain     = document.getElementById('cv-main');
+  const cvOv       = document.getElementById('cv-ov');
+  const sbTrack    = document.getElementById('sb-track');
+  const sbThumb    = document.getElementById('sb-thumb');
+  const leftSb     = document.getElementById('left-sb');
+  const infoPanel  = document.getElementById('info-panel');
+  const panelPH    = document.getElementById('panel-placeholder');
+  const panelCt    = document.getElementById('panel-content');
+
+  const mainCtx  = cvMain.getContext('2d');
+  const ovCtx    = cvOv.getContext('2d');
+
+  /* ── Resize canvas to match container ──────────────────── */
+  function resizeCanvas() {{
+    const w = chartVScroll.clientWidth;
+    const dpr = window.devicePixelRatio || 1;
+    cvMain.width  = w * dpr;
+    cvMain.height = TOTAL_H * dpr;
+    cvMain.style.width  = w + 'px';
+    cvMain.style.height = TOTAL_H + 'px';
+    cvOv.width  = w * dpr;
+    cvOv.height = TOTAL_H * dpr;
+    cvOv.style.width  = w + 'px';
+    cvOv.style.height = TOTAL_H + 'px';
+    mainCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ovCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    leftSb.style.height = TOTAL_H + 'px';
+    leftSb.style.width  = LEFT + 'px';
+  }}
+
+  const ro = new ResizeObserver(() => {{ resizeCanvas(); requestRender(); updateScrollbar(); }});
+  ro.observe(chartVScroll);
+  resizeCanvas();
+
+  /* ── Sort ───────────────────────────────────────────────── */
+  function reSort() {{
+    sortedOrder = records.map((_, i) => i);
+    if (state.sort === 'coef') {{
+      sortedOrder.sort((a, b) => records[a].coef - records[b].coef);
+    }} else if (state.sort === 'signed_p') {{
+      sortedOrder.sort((a, b) => {{
+        const ra = records[a], rb = records[b];
+        const sa = Math.sign(ra.coef) / Math.max(ra.p_value, 1e-300);
+        const sb = Math.sign(rb.coef) / Math.max(rb.p_value, 1e-300);
+        return sa - sb;
+      }});
+    }} else {{
+      sortedOrder.sort((a, b) => records[a].obs - records[b].obs);
+    }}
+  }}
+  reSort();
+
+  /* ── Run-length matrix colors (recomputed after every sort) ─ */
+  let runTValues = null; // Float32Array[N * nRows], index = col * nRows + row
+
+  function computeRunColors() {{
+    const nRows = MATRIX_CONTROLS.length;
+    if (nRows === 0 || N === 0) {{ runTValues = null; return; }}
+    runTValues = new Float32Array(N * nRows);
+    let maxRunLen = 1;
+    const runs = [];
+    for (let row = 0; row < nRows; row++) {{
+      const name = MATRIX_CONTROLS[row];
+      let start = null;
+      for (let col = 0; col <= N; col++) {{
+        const included = col < N && records[sortedOrder[col]].included_matrix_controls.includes(name);
+        if (included && start === null) {{ start = col; }}
+        else if (!included && start !== null) {{
+          const rlen = col - start;
+          runs.push([row, start, col, rlen]);
+          if (rlen > maxRunLen) maxRunLen = rlen;
+          start = null;
+        }}
+      }}
+    }}
+    for (const [row, s, e, rlen] of runs) {{
+      const t = Math.pow(rlen / maxRunLen, 0.6);
+      for (let col = s; col < e; col++) runTValues[col * nRows + row] = t;
+    }}
+  }}
+  computeRunColors();
+
+  /* ── Visible range ──────────────────────────────────────── */
+  const VIRT_BUF = 1500;
+
+  function visibleRange() {{
+    if (state.mode === 'compact') return [0, N - 1];
+    const vpW = chartVScroll.clientWidth - LEFT;
+    const sc  = state.scrollX;
+    const step = xStep();
+    const fc  = Math.max(0, Math.floor((sc - VIRT_BUF) / step));
+    const lc  = Math.min(N - 1, Math.ceil((sc + vpW + VIRT_BUF) / step));
+    return [fc, lc];
+  }}
+
+  /* ── Draw helpers ───────────────────────────────────────── */
+  function plotViewportW() {{
+    return Math.max(0, chartVScroll.clientWidth - LEFT - RIGHT);
+  }}
+
+  function xStep() {{
+    if (state.mode !== 'compact' || N <= 0) return X_STEP;
+    return Math.min(X_STEP, plotViewportW() / Math.max(N, 1));
+  }}
+
+  function colX(col) {{
+    const step = xStep();
+    return LEFT + col * step + step / 2;
+  }}
+
+  function colLeft(col) {{ return LEFT + col * xStep(); }}
+
+  function isDimmed(rec) {{
+    return !state.sigFilter.has(rec.star);
+  }}
+
+  /* ── Panel frames & grid (static background, full width) ── */
+  function drawBackground(ctx) {{
+    const vpW = chartVScroll.clientWidth;
+    const plotW = Math.max(0, vpW - LEFT - RIGHT);
+    const rxR = vpW - RIGHT; // right edge of clip region (screen coords)
+    // COEF grid lines (5 levels) — use screen coords to avoid 40k-px paths
+    ctx.lineWidth = 0.75;
+    for (let j = 0; j < 5; j++) {{
+      const gy = COEF_Y + COEF_H * j / 4;
+      ctx.strokeStyle = (j === 0 || j === 2 || j === 4) ? '#E5E7EB' : '#F3F4F6';
+      ctx.beginPath();
+      ctx.moveTo(LEFT, gy);
+      ctx.lineTo(rxR, gy);
+      ctx.stroke();
+    }}
+    // STARS center reference line, matching the COEF zero-line style
+    ctx.strokeStyle = '#EF4444';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.moveTo(LEFT, STAR_Y + STAR_H / 2);
+    ctx.lineTo(rxR, STAR_Y + STAR_H / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1.0;
+    // MATRIX row separators
+    for (let r = 0; r < MATRIX_CONTROLS.length; r++) {{
+      const ry = MATRIX_Y + r * ROW_H;
+      ctx.strokeStyle = '#F3F4F6';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(LEFT, ry);
+      ctx.lineTo(rxR, ry);
+      ctx.stroke();
+    }}
+    // OBS guide lines (max/mean/min)
+    const obsRefVals = [OBS_MAX, OBS_MEAN, OBS_MIN];
+    for (let i = 0; i < 3; i++) {{
+      const yt = obsY(obsRefVals[i]);
+      const isMean = i === 1;
+      ctx.strokeStyle = isMean ? '#EF4444' : '#F3F4F6';
+      ctx.lineWidth = isMean ? 1.5 : 0.7;
+      if (isMean) {{
+        ctx.setLineDash([5, 4]);
+        ctx.globalAlpha = 0.55;
+      }}
+      ctx.beginPath();
+      ctx.moveTo(LEFT, yt);
+      ctx.lineTo(rxR, yt);
+      ctx.stroke();
+      if (isMean) {{
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1.0;
+      }}
+    }}
+    // Swimlane backgrounds for alt groups
+    const altGroups = DATA.matrixAltGroups || [];
+    const altGroupColors = {alt_group_colors_js};
+    let cIdx = 0;
+    for (const grp of altGroups) {{
+      if (grp.kind !== 'controls_test') {{ cIdx++; continue; }}
+      const s = grp.start, e = grp.end;
+      if (s < 0 || e <= s || e >= MATRIX_CONTROLS.length) {{ cIdx++; continue; }}
+      const fill = altGroupColors[cIdx % altGroupColors.length];
+      cIdx++;
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = fill;
+      ctx.fillRect(LEFT, MATRIX_Y + s * ROW_H, plotW, (e - s + 1) * ROW_H);
+      ctx.globalAlpha = 1.0;
+    }}
+  }}
+
+  /* ── Guides (special vertical lines) ───────────────────── */
+  function drawGuides(ctx, fc, lc) {{
+    ctx.lineWidth = 1;
+    for (let col = fc; col <= lc; col++) {{
+      const rec = records[sortedOrder[col]];
+      const isFull    = state.showFull    && rec.is_full;
+      const isNotest  = state.showNotest  && rec.is_no_controls_test;
+      if (!isFull && !isNotest) continue;
+      const x = colX(col) - state.scrollX;
+      ctx.strokeStyle = isFull ? SPECIAL_FULL : SPECIAL_NOTEST;
+      ctx.setLineDash([3, 2]);
+      const coefAt = cy(rec.coef);
+      const gapR = 4.8;
+      ctx.beginPath();
+      ctx.moveTo(x, STAR_Y); ctx.lineTo(x, STAR_Y + STAR_H);
+      ctx.moveTo(x, COEF_Y); ctx.lineTo(x, Math.max(COEF_Y, coefAt - gapR));
+      ctx.moveTo(x, Math.min(COEF_Y + COEF_H, coefAt + gapR)); ctx.lineTo(x, COEF_Y + COEF_H);
+      ctx.moveTo(x, MATRIX_Y); ctx.lineTo(x, MATRIX_Y + MATRIX_H);
+      ctx.moveTo(x, OBS_Y); ctx.lineTo(x, OBS_Y + OBS_H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }}
+  }}
+
+  /* ── STARS panel ────────────────────────────────────────── */
+  function drawStars(ctx, fc, lc) {{
+    const cz = STAR_Y + STAR_H / 2;  // zero center
+    const drawCompactZeroRun = (startCol, endCol, y, h, color, alpha) => {{
+      if (startCol === null || endCol < startCol) return;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = h;
+      ctx.setLineDash([3.2, 2.2]);
+      const x0 = colLeft(startCol) - state.scrollX;
+      const x1 = colLeft(endCol + 1) - state.scrollX;
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }};
+    let zeroRunStart = null;
+    let zeroRunEnd = -1;
+    let zeroRunY = 0;
+    let zeroRunH = 0;
+    let zeroRunColor = '';
+    let zeroRunAlpha = 1.0;
+    const flushZeroRun = () => {{
+      drawCompactZeroRun(zeroRunStart, zeroRunEnd, zeroRunY, zeroRunH, zeroRunColor, zeroRunAlpha);
+      zeroRunStart = null;
+      zeroRunEnd = -1;
+    }};
+    for (let col = fc; col <= lc; col++) {{
+      const rec = records[sortedOrder[col]];
+      const dimmed = isDimmed(rec);
+      const x = colX(col) - state.scrollX;
+      const step = xStep();
+      const compact = state.mode === 'compact';
+      const isFull   = state.showFull   && rec.is_full;
+      const isNotest = state.showNotest && rec.is_no_controls_test;
+      const baseFill = rec.coef >= 0 ? STAR_POS : STAR_NEG;
+      const fill = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : baseFill;
+      ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+      const dirn = rec.coef < 0 ? -1 : 1;
+      const bh = compact ? Math.max(1.1, Math.min(3, STAR_H / 20)) : 7;
+      const bw = compact ? Math.max(0.6, step) : Math.max(1, step * 0.72);
+      if (rec.star === 0) {{
+        const by = cz - dirn * 0.74 / 3 * (STAR_H / 2 - 9);
+        if (compact) {{
+          if (
+            zeroRunStart !== null
+            && col === zeroRunEnd + 1
+            && Math.abs(by - zeroRunY) < 0.01
+            && fill === zeroRunColor
+            && Math.abs((dimmed ? 0.13 : 1.0) - zeroRunAlpha) < 0.001
+          ) {{
+            zeroRunEnd = col;
+          }} else {{
+            flushZeroRun();
+            zeroRunStart = col;
+            zeroRunEnd = col;
+            zeroRunY = by;
+            zeroRunH = bh;
+            zeroRunColor = fill;
+            zeroRunAlpha = dimmed ? 0.13 : 1.0;
+          }}
+          continue;
+        }}
+        const rx = compact ? x - bw / 2 : x - step * 0.36;
+        const ry = by - bh / 2;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(rx, ry, bw, bh, 1.6);
+        else ctx.rect(rx, ry, bw, bh);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.globalAlpha = 1.0;
+        ctx.fill();
+        ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+        ctx.strokeStyle = fill;
+        ctx.lineWidth = 1.65;
+        ctx.stroke();
+        continue;
+      }}
+      if (compact) flushZeroRun();
+      ctx.fillStyle = fill;
+      for (let blk = 0; blk < rec.star; blk++) {{
+        const t = dirn * (blk + 0.74) / 3;
+        const by = cz - t * (STAR_H / 2 - 9);
+        ctx.beginPath();
+        const rx = compact ? x - bw / 2 : x - step * 0.36, ry = by - bh / 2;
+        if (!compact && ctx.roundRect) ctx.roundRect(rx, ry, bw, bh, 1);
+        else ctx.rect(rx, ry, bw, bh);
+        ctx.fill();
+      }}
+    }}
+    if (state.mode === 'compact') flushZeroRun();
+    ctx.globalAlpha = 1.0;
+  }}
+
+  /* ── CI bands ───────────────────────────────────────────── */
+  function drawCIBands(ctx, fc, lc) {{
+    if (lc < fc) return;
+    const levels = [
+      {{ lo: 'ci99_lo', hi: 'ci99_hi', key: 99, alpha: 0.16 }},
+      {{ lo: 'ci95_lo', hi: 'ci95_hi', key: 95, alpha: 0.22 }},
+      {{ lo: 'ci90_lo', hi: 'ci90_hi', key: 90, alpha: 0.28 }},
+    ];
+    const step = xStep();
+    const bandW = Math.max(0.25, step);
+    for (const lvl of levels) {{
+      if (!state.showCI[lvl.key]) continue;
+      ctx.fillStyle = `rgba(17,24,39,${{lvl.alpha}})`;
+      for (let col = fc; col <= lc; col++) {{
+        const rec = records[sortedOrder[col]];
+        const x = colX(col) - state.scrollX;
+        const yHi = cy(rec[lvl.hi]);
+        const yLo = cy(rec[lvl.lo]);
+        ctx.fillRect(x - bandW / 2, yHi, bandW, yLo - yHi);
+      }}
+    }}
+  }}
+
+  /* ── Coef points & zero line ────────────────────────────── */
+  function drawCoef(ctx, fc, lc) {{
+    // zero line — use screen coords to avoid anti-aliasing bleed at clip boundary
+    const zy = cy(0);
+    if (zy >= COEF_Y && zy <= COEF_Y + COEF_H) {{
+      const rxR = chartVScroll.clientWidth - RIGHT;
+      ctx.strokeStyle = '#EF4444';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      ctx.moveTo(LEFT, zy);
+      ctx.lineTo(rxR, zy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1.0;
+    }}
+    // points
+    const step = xStep();
+    const pointR = state.mode === 'compact'
+      ? Math.max(0.55, Math.min(1.45, step * 0.58))
+      : Math.max(1.6, Math.min(2.6, step * 0.36));
+    for (let col = fc; col <= lc; col++) {{
+      const rec = records[sortedOrder[col]];
+      const dimmed = isDimmed(rec);
+      ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+      ctx.fillStyle = rec.color;
+      ctx.beginPath();
+      ctx.arc(colX(col) - state.scrollX, cy(rec.coef), pointR, 0, Math.PI * 2);
+      ctx.fill();
+    }}
+    ctx.globalAlpha = 1.0;
+  }}
+
+  /* ── Control matrix ─────────────────────────────────────── */
+  function drawMatrix(ctx, fc, lc) {{
+    for (let ci = 0; ci < MATRIX_CONTROLS.length; ci++) {{
+      const name = MATRIX_CONTROLS[ci];
+      const ry = MATRIX_Y + ci * ROW_H;
+      for (let col = fc; col <= lc; col++) {{
+        const rec = records[sortedOrder[col]];
+        if (!rec.included_matrix_controls.includes(name)) continue;
+        const dimmed = isDimmed(rec);
+        ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+        const isFull   = state.showFull   && rec.is_full;
+        const isNotest = state.showNotest && rec.is_no_controls_test;
+        const groupFill = ALT_GROUP_COLOR_MAP[name];
+        const step = xStep();
+        const compact = state.mode === 'compact';
+        let normalFill = '#1F2937';
+        if (!compact && runTValues) {{
+          const t = runTValues[col * MATRIX_CONTROLS.length + ci];
+          const v = Math.round(200 - 200 * t);
+          normalFill = `rgb(${{v}},${{v}},${{v}})`;
+        }}
+        ctx.fillStyle = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill);
+        const rw = compact ? Math.min(2.0, step * 0.55) : Math.max(1, step * 0.80);
+        const rx = compact
+          ? colX(col) - state.scrollX - rw / 2
+          : colLeft(col) - state.scrollX + step * 0.10;
+        const rh = compact ? ROW_H : ROW_H - 4;
+        ctx.beginPath();
+        if (!compact && ctx.roundRect) ctx.roundRect(rx, ry + 2, rw, rh, 1.5);
+        else ctx.rect(rx, compact ? ry : ry + 2, rw, rh);
+        ctx.fill();
+      }}
+    }}
+    ctx.globalAlpha = 1.0;
+  }}
+
+  /* ── OBS bars ───────────────────────────────────────────── */
+  function drawObs(ctx, fc, lc) {{
+    const baseline = obsY(OBS_MEAN);
+    const obsGap = 2.0;
+    const obsMinH = 0.7;
+    for (let col = fc; col <= lc; col++) {{
+      const rec = records[sortedOrder[col]];
+      const dimmed = isDimmed(rec);
+      ctx.globalAlpha = dimmed ? 0.13 : 0.78;
+      const isFull   = state.showFull   && rec.is_full;
+      const isNotest = state.showNotest && rec.is_no_controls_test;
+      ctx.fillStyle = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : OBS_FILL;
+      if (isFull || isNotest) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+      const vy = obsY(rec.obs);
+      let barY, barH;
+      if (vy < baseline) {{
+        const bot = baseline - obsGap;
+        barY = Math.min(vy, bot - obsMinH);
+        barH = bot - barY;
+      }} else if (vy > baseline) {{
+        barY = baseline + obsGap;
+        const bot = Math.max(vy, barY + obsMinH);
+        barH = bot - barY;
+      }} else {{
+        barY = baseline + obsGap;
+        barH = obsMinH;
+      }}
+      const step = xStep();
+      const compact = state.mode === 'compact';
+      const bx = colLeft(col) - state.scrollX + (compact ? 0 : step * 0.12);
+      const bw = compact ? Math.max(0.5, step) : Math.max(1, step * 0.76);
+      ctx.beginPath();
+      if (!compact && ctx.roundRect) ctx.roundRect(bx, barY, bw, barH, 1.5);
+      else ctx.rect(bx, barY, bw, barH);
+      ctx.fill();
+    }}
+    ctx.globalAlpha = 1.0;
+  }}
+
+  /* ── White sidebar mask (sticky left labels) ────────────── */
+  function drawSidebarMask(ctx) {{
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, LEFT, TOTAL_H);
+  }}
+
+  /* ── Main render ────────────────────────────────────────── */
+  let _raf = 0;
+  function requestRender() {{
+    if (!_raf) _raf = requestAnimationFrame(() => {{ _raf = 0; render(); }});
+  }}
+
+  function render() {{
+    mainCtx.clearRect(0, 0, cvMain.width, cvMain.height);
+    const [fc, lc] = visibleRange();
+    // Clip to chart area to avoid bleeding into left/right margins during scroll
+    mainCtx.save();
+    mainCtx.beginPath();
+    mainCtx.rect(LEFT, 0, chartVScroll.clientWidth - LEFT - RIGHT, TOTAL_H);
+    mainCtx.clip();
+    drawBackground(mainCtx);
+    drawGuides(mainCtx, fc, lc);
+    drawCIBands(mainCtx, fc, lc);
+    drawStars(mainCtx, fc, lc);
+    drawCoef(mainCtx, fc, lc);
+    drawMatrix(mainCtx, fc, lc);
+    drawObs(mainCtx, fc, lc);
+    mainCtx.restore();
+    // These three are unclipped — drawn over the full canvas
+    drawSidebarMask(mainCtx);
+    drawPanelFrames(mainCtx);
+    drawPanelLabels(mainCtx);
+  }}
+
+  /* ── Panel frames (drawn outside clip so borders are fully visible) ── */
+  function drawPanelFrames(ctx) {{
+    const vpW = chartVScroll.clientWidth;
+    const frameW = Math.max(0, vpW - LEFT - RIGHT);
+    const panelDefs = [
+      [STAR_Y, STAR_H],
+      [COEF_Y, COEF_H],
+      [MATRIX_Y, MATRIX_H],
+      [OBS_Y, OBS_H],
+    ];
+    ctx.strokeStyle = '#D1D5DB';
+    ctx.lineWidth = 0.75;
+    for (const [py, ph] of panelDefs) {{
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(LEFT, py, frameW, ph, 2);
+      else ctx.rect(LEFT, py, frameW, ph);
+      ctx.stroke();
+    }}
+  }}
+
+  /* ── Panel labels (right side, rotated 90°) ─────────────── */
+  function drawPanelLabels(ctx) {{
+    const vpW = chartVScroll.clientWidth;
+    const labelX = vpW - RIGHT + 18;
+    ctx.save();
+    ctx.fillStyle = '#9CA3AF';
+    ctx.font = '600 9px "RM Courier New","Courier New",monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const panelDefs = [
+      [STAR_Y, STAR_H, 'STARS'],
+      [COEF_Y, COEF_H, 'COEF'],
+      [MATRIX_Y, MATRIX_H, 'CONTROLS'],
+      [OBS_Y, OBS_H, 'OBS'],
+    ];
+    for (const [py, ph, lbl] of panelDefs) {{
+      const mid = py + ph / 2;
+      ctx.save();
+      ctx.translate(labelX, mid);
+      ctx.rotate(Math.PI / 2);
+      ctx.fillText(lbl, 0, 0);
+      ctx.restore();
+    }}
+    ctx.restore();
+  }}
+
+  /* ── Overlay (hover/pin highlight) ─────────────────────── */
+  function drawOverlay(col) {{
+    ovCtx.clearRect(0, 0, cvOv.width, cvOv.height);
+    if (state.mode === 'compact') return;
+    if (col < 0) return;
+    const x = colX(col) - state.scrollX;
+    const vpW = chartVScroll.clientWidth;
+    ovCtx.save();
+    ovCtx.beginPath();
+    ovCtx.rect(LEFT, 0, vpW - LEFT - RIGHT, TOTAL_H);
+    ovCtx.clip();
+    // Purple column tint — only within panel areas, skip inter-panel gaps
+    ovCtx.fillStyle = 'rgba(124,58,237,0.15)';
+    const step = xStep();
+    const tw = step;
+    const tx = x - step / 2;
+    for (const [py, ph] of [[STAR_Y,STAR_H],[COEF_Y,COEF_H],[MATRIX_Y,MATRIX_H],[OBS_Y,OBS_H]]) {{
+      ovCtx.fillRect(tx, py, tw, ph);
+    }}
+    // Active ring on coef point
+    const rec = records[sortedOrder[col]];
+    ovCtx.strokeStyle = ACTIVE_COL;
+    ovCtx.lineWidth = 2;
+    ovCtx.beginPath();
+    ovCtx.arc(x, cy(rec.coef), 6, 0, Math.PI * 2);
+    ovCtx.stroke();
+    ovCtx.restore();
+  }}
+
+  function clearOverlay() {{
+    ovCtx.clearRect(0, 0, cvOv.width, cvOv.height);
+  }}
+
+  /* ── Hit testing ────────────────────────────────────────── */
+  function colFromEvent(e) {{
+    const rect = cvOv.getBoundingClientRect();
+    const worldX = (e.clientX - rect.left) + state.scrollX;
+    const col = Math.floor((worldX - LEFT) / xStep());
+    if (col < 0 || col >= N) return -1;
+    return col;
+  }}
+
+  /* ── Info panel update ──────────────────────────────────── */
+  function fmt(v) {{ return Number(v).toFixed(4); }}
+
+  function starLevel(p) {{
+    return p < 0.01 ? 3 : p < 0.05 ? 2 : p < 0.10 ? 1 : 0;
+  }}
+
+  function starsForP(p) {{
+    const level = starLevel(p);
+    return level === 0 ? '.' : '*'.repeat(level);
+  }}
+
+  function escHtml(value) {{
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }}
+
+  function controlBadge(stat) {{
+    if (!stat) return `<span class="coef-badge missing">--</span>`;
+    const coef = Number(stat.coef);
+    const level = starLevel(Number(stat.p_value));
+    const sign = coef < 0 ? -1 : 1;
+    const signedLevel = sign * level;
+    const label = level === 0 ? `0${{sign < 0 ? '-' : '+'}}` : `${{signedLevel > 0 ? '+' : ''}}${{signedLevel}}`;
+    const bgClass = level === 0 ? 'zero' : sign < 0 ? 'neg' : 'pos';
+    const colorByLevel = {{
+      '-3': '#1E3A8A', '-2': '#1D4ED8', '-1': '#60A5FA',
+      '0-': '#4B5563', '0+': '#4B5563',
+      '+1': '#FCA5A5', '+2': '#DC2626', '+3': '#7F1D1D',
+    }};
+    return `<span class="coef-badge ${{bgClass}}" style="color:${{colorByLevel[label] || '#4B5563'}}">${{label}}</span>`;
+  }}
+
+  function showInfo(recIdx) {{
+    const r = records[recIdx];
+    const star = r.star;
+    const ci99 = `[${{fmt(r.ci99_lo)}}, ${{fmt(r.ci99_hi)}}]`;
+    const ci95 = `[${{fmt(r.ci95_lo)}}, ${{fmt(r.ci95_hi)}}]`;
+    const ci90 = `[${{fmt(r.ci90_lo)}}, ${{fmt(r.ci90_hi)}}]`;
+    const adjR2 = (r.adj_r2 === null || r.adj_r2 === undefined) ? '-' : Number(r.adj_r2).toFixed(4);
+    const withinR2 = (r.within_r2 === null || r.within_r2 === undefined) ? '-' : Number(r.within_r2).toFixed(4);
+    const fStat = (r.f_stat === null || r.f_stat === undefined) ? '-' : Number(r.f_stat).toFixed(3);
+
+    const includedControls = new Set(r.controls_all || []);
+    const testOrder = DATA.controlsTestNames || DATA.matrixControls || [];
+    const mustOrder = DATA.controlsMustNames || [];
+    const testIncl = testOrder.filter(c => includedControls.has(c));
+    const mustIncl = mustOrder.filter(c => includedControls.has(c));
+    const orderedKnown = new Set([...testIncl, ...mustIncl]);
+    const extraIncl = (r.controls_all || []).filter(c => !orderedKnown.has(c));
+    const controlStats = new Map((r.control_stats || []).map(item => [item.name, item]));
+
+    const coefRow = (name, group) => {{
+      const stat = controlStats.get(name);
+      return `
+        <div class="coef-row ${{group === 'test' ? 'is-test' : ''}}">
+          <span class="coef-name-wrap">${{controlBadge(stat)}}<span class="coef-name" title="${{escHtml(name)}}">${{escHtml(name)}}</span></span>
+          ${{stat
+            ? `<span class="coef-val ${{Number(stat.coef) < 0 ? 'neg' : 'pos'}}">${{fmt(Number(stat.coef))}}</span>
+               <span class="coef-p s${{starLevel(Number(stat.p_value))}}"><span class="coef-stars">${{starsForP(Number(stat.p_value))}}</span><span>${{Number(stat.p_value).toFixed(4)}}</span></span>`
+            : `<span class="coef-val placeholder">-</span><span class="coef-p placeholder"><span class="coef-stars">.</span><span>-</span></span>`
+          }}
+        </div>`;
+    }};
+
+    const coefBlock = r.controls_all.length === 0
+      ? `<div class="coef-empty">No controls included in this specification.</div>`
+      : `<div class="panel-coefs-head"><span>Control coefficients</span><span class="panel-coefs-meta">${{testIncl.length}} test · ${{mustIncl.length + extraIncl.length}} must</span></div>
+         ${{mustIncl.length + extraIncl.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{mustIncl.length + extraIncl.length}})</span></div>${{[...mustIncl, ...extraIncl].map(c => coefRow(c, 'base')).join('')}}` : ''}}
+         ${{testIncl.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}})</span></div>${{testIncl.map(c => coefRow(c, 'test')).join('')}}` : ''}}`;
+
+    panelCt.innerHTML = `
+      <div class="panel-head">
+        <span class="panel-title">Spec #${{recIdx + 1}}&thinsp;/&thinsp;${{records.length}}</span>
+        <span class="panel-sig" style="background:${{SIG_BG[star]}};color:${{SIG_COLOR[star]}}">${{SIG_LABEL[star]}}</span>
+      </div>
+      <div class="panel-table">
+        <span class="panel-key">coef</span>         <span class="panel-val">${{r.coef.toFixed(5)}}</span>
+        <span class="panel-key">std&nbsp;err</span>  <span class="panel-val">${{r.se.toFixed(5)}}</span>
+        <span class="panel-key">t&#8209;stat</span>  <span class="panel-val">${{r.t_value.toFixed(3)}}</span>
+        <span class="panel-key">p&#8209;value</span> <span class="panel-val">${{r.p_value.toFixed(4)}}</span>
+        <div class="panel-divider"></div>
+        <span class="panel-key">90% CI</span>       <span class="panel-val">${{ci90}}</span>
+        <span class="panel-key">95% CI</span>       <span class="panel-val">${{ci95}}</span>
+        <span class="panel-key">99% CI</span>       <span class="panel-val">${{ci99}}</span>
+        <div class="panel-divider"></div>
+        <span class="panel-key">obs</span>           <span class="panel-val">${{r.obs.toLocaleString()}}</span>
+        <span class="panel-key">adj&nbsp;R²</span>   <span class="panel-val">${{adjR2}}</span>
+        <span class="panel-key">within&nbsp;R²</span><span class="panel-val">${{withinR2}}</span>
+        <span class="panel-key">F</span>             <span class="panel-val">${{fStat}}</span>
+        <div class="panel-divider"></div>
+        <div class="panel-coefs">${{coefBlock}}</div>
+      </div>`;
+
+    panelPH.style.display = 'none';
+    panelCt.style.display = 'block';
+
+    // highlight control labels
+    document.querySelectorAll('.ctrl-lbl').forEach(el => el.classList.remove('active-ctrl'));
+    (r.included_matrix_controls || []).forEach(name => {{
+      document.querySelectorAll(`.ctrl-lbl[data-control="${{escHtml(name)}}"]`)
+        .forEach(el => el.classList.add('active-ctrl'));
+    }});
+  }}
+
+  function clearInfo() {{
+    panelPH.style.display = '';
+    panelCt.style.display = 'none';
+    document.querySelectorAll('.ctrl-lbl').forEach(el => el.classList.remove('active-ctrl'));
+  }}
+
+  /* ── Activation ─────────────────────────────────────────── */
+  let activeCol = -1;  // column index (in sorted order)
+
+  function activate(col, pin) {{
+    if (state.mode === 'compact') return;
+    if (col < 0 || col >= N) return;
+    const recIdx = sortedOrder[col];
+    if (pinnedIdx >= 0 && !pin) return;
+    activeCol = col;
+    activeIdx = recIdx;
+    if (pin) {{
+      if (pinnedIdx === recIdx) {{
+        // clicking same pinned spec → deselect
+        pinnedIdx = -1;
+        activeCol = -1;
+        activeIdx = -1;
+        clearOverlay();
+        clearInfo();
+        return;
+      }}
+      pinnedIdx = recIdx;
+    }}
+    drawOverlay(col);
+    showInfo(recIdx);
+  }}
+
+  function deactivate() {{
+    if (pinnedIdx >= 0) return;
+    activeCol = -1;
+    activeIdx = -1;
+    clearOverlay();
+    clearInfo();
+  }}
+
+  /* ── Mouse events ───────────────────────────────────────── */
+  cvOv.addEventListener('mousemove', e => {{
+    if (state.mode === 'compact') return;
+    const col = colFromEvent(e);
+    if (col >= 0) {{
+      if (pinnedIdx >= 0) return;  // don't move while pinned
+      if (col !== activeCol) activate(col, false);
+    }} else {{
+      if (pinnedIdx < 0) deactivate();
+    }}
+  }});
+
+  cvOv.addEventListener('mouseleave', () => {{
+    if (state.mode === 'compact') return;
+    if (pinnedIdx < 0) deactivate();
+  }});
+
+  cvOv.addEventListener('click', e => {{
+    if (state.mode === 'compact') return;
+    const col = colFromEvent(e);
+    if (col < 0) {{
+      pinnedIdx = -1;
+      deactivate();
+      return;
+    }}
+    const recIdx = sortedOrder[col];
+    if (pinnedIdx === recIdx) {{
+      // toggle off
+      pinnedIdx = -1;
+      deactivate();
+    }} else {{
+      activate(col, true);
+    }}
+  }});
+
+  /* ── Keyboard navigation ────────────────────────────────── */
+  document.addEventListener('keydown', e => {{
+    if (state.mode === 'compact') return;
+    if (e.key === 'Escape') {{
+      pinnedIdx = -1;
+      activeCol = -1;
+      activeIdx = -1;
+      clearOverlay();
+      clearInfo();
+      return;
+    }}
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {{
+      e.preventDefault();
+      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      const cur = activeCol >= 0 ? activeCol : (dir > 0 ? -1 : N);
+      const next = Math.max(0, Math.min(N - 1, cur + dir));
+      pinnedIdx = sortedOrder[next];
+      activate(next, true);
+      // scroll if needed
+      const x = colX(next);
+      const vpW = chartVScroll.clientWidth - LEFT;
+      if (x - state.scrollX < LEFT + 20) {{
+        state.scrollX = Math.max(0, x - LEFT - 20);
+        requestRender();
+        updateScrollbar();
+      }} else if (x - state.scrollX > vpW - 20) {{
+        const maxSc = Math.max(0, N * xStep() - vpW);
+        state.scrollX = Math.min(maxSc, x - vpW + 20);
+        requestRender();
+        updateScrollbar();
+      }}
+    }}
+  }});
+
+  /* ── Wheel scroll ───────────────────────────────────────── */
+  cvOv.addEventListener('wheel', e => {{
+    const isHorizontal = Math.abs(e.deltaX) >= Math.abs(e.deltaY);
+    if (state.mode === 'compact') return;
+    if (isHorizontal) {{
+      e.preventDefault();
+      const vpW = chartVScroll.clientWidth - LEFT;
+      const maxSc = Math.max(0, N * xStep() - vpW);
+      state.scrollX = Math.max(0, Math.min(maxSc, state.scrollX + e.deltaX));
+      requestRender();
+      updateScrollbar();
+      if (activeCol >= 0 && pinnedIdx >= 0) drawOverlay(activeCol);
+    }}
+    // vertical: don't preventDefault — let it bubble to #chart-vscroll for native scroll
+  }}, {{ passive: false }});
+
+  /* ── Scrollbar ──────────────────────────────────────────── */
+  function updateScrollbar() {{
+    if (state.mode === 'compact') {{
+      sbThumb.style.display = 'none';
+      return;
+    }}
+    const trackW = sbTrack.clientWidth;
+    const vpW = chartVScroll.clientWidth - LEFT;
+    const totalW = N * xStep();
+    if (totalW <= vpW) {{
+      sbThumb.style.display = 'none';
+      return;
+    }}
+    sbThumb.style.display = '';
+    const ratio = vpW / totalW;
+    const thumbW = Math.max(20, trackW * ratio);
+    const maxScroll = Math.max(0, totalW - vpW);
+    const thumbLeft = maxScroll > 0 ? (state.scrollX / maxScroll) * (trackW - thumbW) : 0;
+    sbThumb.style.width = thumbW + 'px';
+    sbThumb.style.left  = thumbLeft + 'px';
+  }}
+
+  // Drag scrollbar
+  let sbDrag = null;
+  sbThumb.addEventListener('mousedown', e => {{
+    sbDrag = {{ startX: e.clientX, startSc: state.scrollX }};
+    e.preventDefault();
+  }});
+  document.addEventListener('mousemove', e => {{
+    if (!sbDrag) return;
+    const trackW = sbTrack.clientWidth;
+    const vpW = chartVScroll.clientWidth - LEFT;
+    const totalW = N * xStep();
+    const maxSc = Math.max(0, totalW - vpW);
+    const thumbW = Math.max(20, trackW * (vpW / totalW));
+    const dx = e.clientX - sbDrag.startX;
+    const sc = sbDrag.startSc + dx * (maxSc / (trackW - thumbW));
+    state.scrollX = Math.max(0, Math.min(maxSc, sc));
+    requestRender();
+    updateScrollbar();
+  }});
+  document.addEventListener('mouseup', () => {{ sbDrag = null; }});
+  sbTrack.addEventListener('click', e => {{
+    if (e.target === sbThumb) return;
+    const rect = sbTrack.getBoundingClientRect();
+    const trackW = sbTrack.clientWidth;
+    const vpW = chartVScroll.clientWidth - LEFT;
+    const totalW = N * xStep();
+    const maxSc = Math.max(0, totalW - vpW);
+    const frac = (e.clientX - rect.left) / trackW;
+    state.scrollX = Math.max(0, Math.min(maxSc, frac * totalW));
+    requestRender();
+    updateScrollbar();
+  }});
+
+  /* ── Sort buttons ───────────────────────────────────────── */
+  function syncSortButtons() {{
+    document.querySelectorAll('#rmSort button').forEach(btn => {{
+      const selected = btn.dataset.v === state.sort;
+      btn.classList.toggle('active', selected);
+      btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    }});
+  }}
+  syncSortButtons();
+
+  document.getElementById('rmSort').addEventListener('click', e => {{
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    state.sort = btn.dataset.v || 'signed_p';
+    reSort();
+    computeRunColors();
+    syncSortButtons();
+    pinnedIdx = -1;
+    activeCol = -1;
+    activeIdx = -1;
+    clearOverlay();
+    clearInfo();
+    requestRender();
+    updateScrollbar();
+  }});
+
+  /* ── Mode buttons ───────────────────────────────────────── */
+  function syncModeButtons() {{
+    document.body.classList.toggle('mode-compact', state.mode === 'compact');
+    document.querySelectorAll('#rmMode button').forEach(btn => {{
+      if (btn.dataset.v === 'compact') btn.disabled = !COMPACT_ENABLED;
+      const selected = btn.dataset.v === state.mode;
+      btn.classList.toggle('active', selected);
+      btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    }});
+  }}
+  syncModeButtons();
+
+  document.getElementById('rmMode').addEventListener('click', e => {{
+    const btn = e.target.closest('button');
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.v === 'compact' && !COMPACT_ENABLED) return;
+    state.mode = btn.dataset.v || 'detail';
+    state.scrollX = 0;
+    pinnedIdx = -1;
+    activeCol = -1;
+    activeIdx = -1;
+    clearOverlay();
+    clearInfo();
+    syncModeButtons();
+    resizeCanvas();
+    requestRender();
+    updateScrollbar();
+  }});
+
+  /* ── Significance filter chips ──────────────────────────── */
+  document.querySelectorAll('.rm-chip[data-sig]').forEach(chip => {{
+    chip.addEventListener('click', () => {{
+      const star = Number(chip.dataset.sig);
+      if (state.sigFilter.has(star)) {{
+        if (state.sigFilter.size <= 1) return;
+        state.sigFilter.delete(star);
+      }} else {{
+        state.sigFilter.add(star);
+      }}
+      chip.classList.toggle('on', state.sigFilter.has(star));
+      requestRender();
+    }});
+  }});
+
+  /* ── CI band chips ──────────────────────────────────────── */
+  document.querySelectorAll('.rm-chip[data-ci]').forEach(chip => {{
+    chip.addEventListener('click', () => {{
+      const ci = Number(chip.dataset.ci);
+      const enabled = !chip.classList.contains('on');
+      chip.classList.toggle('on', enabled);
+      state.showCI[ci] = enabled;
+      requestRender();
+    }});
+  }});
+
+  /* ── Guide chips ────────────────────────────────────────── */
+  document.querySelectorAll('.rm-chip[data-special]').forEach(chip => {{
+    chip.addEventListener('click', () => {{
+      const kind = chip.dataset.special;
+      const enabled = !chip.classList.contains('on');
+      chip.classList.toggle('on', enabled);
+      if (kind === 'full') state.showFull = enabled;
+      else state.showNotest = enabled;
+      requestRender();
+    }});
+  }});
+
+  /* ── Initial render ─────────────────────────────────────── */
+  render();
+  updateScrollbar();
+
+  /* add ctrl-lbl active style */
+  const style = document.createElement('style');
+  style.textContent = '.ctrl-lbl.active-ctrl {{ color: #7C3AED !important; font-weight: 600; }}';
+  document.head.appendChild(style);
+
+}})();
+</script>
+</body>
+</html>
+"""
 
 
 # ── CLI entry ─────────────────────────────────────────────────────────────────

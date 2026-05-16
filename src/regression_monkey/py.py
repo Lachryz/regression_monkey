@@ -1988,6 +1988,7 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
           show_special_markers: bool = True,
           title_suffix: str | None = None,
           elapsed_seconds_preplot: float | None = None,
+          engine: str | None = None,
           grouping_variable: str | None = None,
           grouped_plot_records: list[GroupedPlotRecord] | None = None,
           interaction_plot_records: list[SpecRecord] | None = None,
@@ -2299,10 +2300,11 @@ def _plot(records: list[SpecRecord], y_name: str, x_name: str,
                facecolor="#eeeeee", edgecolor="none")
     spec_line = title_suffix.split(" - ", 1)[0] if title_suffix else None
     elapsed_total = (elapsed_seconds_preplot or 0.0) + (perf_counter() - plot_t0)
+    engine_line = f"  |  engine = {engine}" if engine else ""
     title_lines = [
         "Regression Monkey",
         f"Y = {y_name}  |  X = {x_name}",
-        f"specs = {n}  |  controls = {K_total}",
+        f"specs = {n}  |  controls = {K_total}{engine_line}",
         spec_line or "",
         _wrap_title_line("controls_must", list(controls_must)),
         f"grouping_variable = {grouping_variable}" if has_grouped_panel and grouping_variable else "",
@@ -3043,10 +3045,8 @@ def main() -> None:
         "data": str(args.data),
         "y": list(args.y),
         "x": list(args.x),
-        "controls_test": controls_test,
-        "controls_test_flat": controls_test_flat,
-        "controls_must": controls_must,
-        "controls_must_flat": controls_must_flat,
+        "controls_test": controls_test_flat,
+        "controls_must": controls_must_flat,
         "output": str(output_root),
         "run_output_dir": str(run_output_dir),
         "dpi": args.dpi,
