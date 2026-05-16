@@ -1864,7 +1864,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       [OBS_Y, OBS_H],
     ];
     ctx.strokeStyle = '#D1D5DB';
-    ctx.lineWidth = 0.75;
+    ctx.lineWidth = 1.25;
     for (const [py, ph] of panelDefs) {{
       ctx.beginPath();
       if (ctx.roundRect) ctx.roundRect(LEFT, py, frameW, ph, 2);
