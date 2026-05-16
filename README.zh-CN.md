@@ -16,17 +16,18 @@
 
 ![PNG 模式示例](assets/png-sample.png)
 
-**HTML 模式** — 自包含交互网页，悬停高亮规格、点击固定选择，支持按系数、样本量或带符号显著性排序，多个 Y × X × 规格可在同一文件内切换。
+**HTML 模式** — 自包含交互网页，悬停高亮规格、点击固定选择，支持按系数、样本量或带符号显著性排序，多个 Y × X × 规格可在同一文件内切换。`COMPACT` 模式在达到 8192 个规格的基准列宽后不再继续压缩；规格更多时允许横向滚动。紧凑图首次渲染完成后会缓存成一张位图，后续滚动只裁切绘制可见区域；排序、筛选、Guide/CI 开关和窗口尺寸变化时才重建缓存。
 
 ![HTML 模式示例](assets/html-sample.png)
 
 ## 项目文件
 
 - `src/regression_monkey/__main__.py`：主入口，只负责读取配置、调度分析引擎、调用绘图脚本、导出总汇总
-- `src/regression_monkey/py.py`：Python 分析引擎，只负责枚举规格、回归估计和导出标准结果文件
-- `src/regression_monkey/stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
-- `src/regression_monkey/plot.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
-- `src/regression_monkey/html.py`：独立交互式网页脚本，只从同一批标准结果文件读取结果并生成自包含 HTML
+- `src/regression_monkey/engine/py.py`：Python 分析引擎，只负责枚举规格、回归估计和导出标准结果文件
+- `src/regression_monkey/engine/stata.py`：Stata/reghdfe 分析引擎，只负责运行 Stata 并导出标准结果文件
+- `src/regression_monkey/engine/r.py`：R/fixest 分析引擎，只负责调用 `Rscript` 并导出标准结果文件
+- `src/regression_monkey/plot/png.py`：独立绘图脚本，只从 `*_results.csv` 和 `*_plot_meta.json` 读取结果并生成 PNG
+- `src/regression_monkey/plot/html.py`：独立交互式网页脚本，只从同一批标准结果文件读取结果并生成自包含 HTML
 - `config/config.example.toml`：推荐使用的配置文件
 
 ## 运行环境
@@ -410,10 +411,10 @@ Y = analyst_error_m_a   ×  X = ln_quant 无 90% 及以上显著的规格
 
 ## Stata 批处理模式
 
-仓库还提供 `src/regression_monkey/stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎。推荐仍然通过主入口调度：
+仓库还提供 `src/regression_monkey/engine/stata.py`，用于调用 Stata CLI 的 batch 模式并使用 `reghdfe` 作为估计引擎。推荐仍然通过主入口调度：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine stata
+uv run regression-monkey config/config.toml --engine stata
 ```
 
 分析脚本会为每个 `y × x × 规格` 输出标准结果文件：
@@ -451,28 +452,62 @@ Stata 正常运行时，控制台只打印当前规格的可读 `absorb(...) vce
 
 ## R / fixest 模式
 
-仓库还提供 `src/regression_monkey/r.py`，用于调用 `Rscript` 并通过 `fixest` 复现 `reghdfe` 风格的固定效应回归。R 模式现在以准确度优先：每个规格仍保留与逐条 `feols` 相同的有效样本；有效样本完全相同的规格共享一次缓存的 `fixest::demean()`，随后复用吸收后的矩阵并用 `lm.fit()` 进行纯矩阵 OLS。稳健和一维聚类标准误在吸收后的矩阵上计算，并对齐 `fixest` 的固定效应自由度校正；`f_stat` 使用所有非吸收回归变量的联合 Wald F，与 Stata `reghdfe` 的 `e(F)` 对齐。R 路径会用 `parallel::mclapply` 并行 post-demean 规格循环；`n_jobs = 0` 默认使用 8 个 worker 进程，`--n-jobs N` 可显式指定进程数。多维聚类规格回退到逐规格 `feols` 精确路径，因为 `fixest` 可能对非正定 VCOV 做修正，不适合近似复刻。这样只在不改变结果口径的前提下减少重复固定效应迭代。
+仓库还提供 `src/regression_monkey/engine/r.py`，用于调用 `Rscript` 并通过 `fixest` 复现 `reghdfe` 风格的固定效应回归。R 引擎会先写出只包含本次启用规格所需变量的窄数据文件，再为每个 `Y × X × 规格` 生成临时 `.R` 脚本，执行后读取标准的 `*_results.csv` / `*_plot_meta.json` 文件契约。
+
+R 模式以准确度优先：每个规格仍保留与逐条 `feols` 相同的有效样本；有效样本完全相同的规格共享一次缓存的 `fixest::demean()`，随后复用吸收后的矩阵并用 `lm.fit()` 进行纯矩阵 OLS。稳健和一维聚类标准误在吸收后的矩阵上计算，并对齐 `fixest` 的固定效应自由度校正；`f_stat` 使用所有非吸收回归变量的联合 Wald F，与 Stata `reghdfe` 的 `e(F)` 对齐。多维聚类规格回退到逐规格 `feols` 精确路径，因为 `fixest` 可能对非正定 VCOV 做修正，不适合近似复刻。大样本 mask 缓存键作为普通字符串数据保存，不再作为 R environment 变量名，因此 8 万行以上的数据也不会触发 R 的变量名长度限制。
+
+有效样本缓存优化的修复逻辑见：[assets/R引擎样本缓存优化.md](assets/R引擎样本缓存优化.md)。
 
 推荐仍然通过主入口调度：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine r
+uv run regression-monkey config/config.toml --engine r
 ```
 
-R 模式需要系统可执行的 `Rscript` 和 R 包 `fixest`；如果不在 PATH 中，可通过 `--rscript-path /path/to/Rscript` 或 TOML 中的 `rscript_path = "/path/to/Rscript"` 指定。R 模式当前只支持自动规格模式，需要至少启用一个 `absorb_*` flag；分组扩展图仍仅支持 Stata 引擎。
+### 配置 R 环境
+
+R 模式需要系统可执行的 `Rscript` 和 R 包 `fixest`：
+
+```bash
+# macOS 如未安装 R，可先用 Homebrew 安装
+brew install r
+
+# 安装必需包 fixest，以及推荐的加速包 data.table / arrow
+Rscript -e 'install.packages(c("fixest", "data.table", "arrow"), repos = "https://cloud.r-project.org")'
+
+# 检查 Rscript 和 fixest 是否可用
+Rscript -e 'cat(R.version.string, "\n"); stopifnot(requireNamespace("fixest", quietly = TRUE))'
+```
+
+`arrow` 是可选但推荐的包：安装后 Python 会用 Feather 格式把数据交给 R；未安装时会回退到 CSV。`data.table` 也是可选包，用于在 CSV 回退路径中加速读取。
+
+如果 `Rscript` 不在 PATH 中，可通过命令行指定：
+
+```bash
+uv run regression-monkey config/config.toml --engine r --rscript-path /path/to/Rscript
+```
+
+也可以写入 TOML：
+
+```toml
+engine = "r"
+rscript_path = "/path/to/Rscript"
+```
+
+R 模式当前只支持自动规格模式，需要至少启用一个 `absorb_*` flag，例如 `absorb_firm_time_vce_cluster_firm = true`；分组扩展图仍仅支持 Stata 引擎。`n_jobs = 0` 默认使用 8 个 R worker 进程，`--n-jobs N` 或 TOML 的 `n_jobs = N` 可显式指定进程数。
 
 ## 开发与验证
 
 推荐的基础检查：
 
 ```bash
-uv run python -m py_compile src/regression_monkey/__main__.py src/regression_monkey/py.py src/regression_monkey/stata.py src/regression_monkey/r.py src/regression_monkey/plot.py src/regression_monkey/html.py
+uv run python -m py_compile src/regression_monkey/__main__.py src/regression_monkey/engine/py.py src/regression_monkey/engine/stata.py src/regression_monkey/engine/r.py src/regression_monkey/plot/png.py src/regression_monkey/plot/html.py
 ```
 
 用现有 TOML 跑 Python 引擎端到端：
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine python --n-jobs 1
+uv run regression-monkey config/config.toml --engine python --n-jobs 1
 ```
 
 只重画已有结果：

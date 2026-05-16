@@ -18,8 +18,8 @@ from typing import Any
 
 import pandas as pd
 
-from . import plot as rm_plot
-from . import py as rm_py
+from . import png as rm_plot
+from ..engine import py as rm_py
 
 
 # ── Colour palette ────────────────────────────────────────────────────────────
@@ -574,2179 +574,12 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
 </html>
 """
 
-
-def _build_html(payload: dict[str, Any]) -> str:
-    title = html.escape(str(payload["title"]))
-    y_title = html.escape(str(payload.get("y", "")))
-    x_title = html.escape(str(payload.get("x", "")))
-    subtitle = html.escape(str(payload.get("subtitle") or ""))
-    controls_must_line = html.escape(_payload_controls_must_line(payload))
-    controls_test_line = _payload_controls_test_line_html(payload)
-    elapsed = payload.get("elapsedSeconds")
-    elapsed_text = f"Elapsed = {float(elapsed):.2f}s" if elapsed is not None else "Elapsed = n/a"
-    engine = str(payload.get("engine") or "").strip()
-    engine_text = f"engine = {html.escape(engine)}" if engine else ""
-    n = len(payload["records"])
-    n1 = sum(1 for r in payload["records"] if r["star"] == 3)
-    n5 = sum(1 for r in payload["records"] if r["star"] == 2)
-    n10 = sum(1 for r in payload["records"] if r["star"] == 1)
-
-    data_json = _json_for_html(payload)
-    svg_markup, width, height = _build_svg(payload)
-
-    sig_colors_js = json.dumps(_SIG_COLOR)
-    sig_bg_js = json.dumps(_SIG_BG)
-    sig_labels_js = json.dumps(_SIG_LABEL)
-    embedded_font_css = _embedded_courier_new_css()
-
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <style>
-    {embedded_font_css}
-    /* ── Design tokens ──────────────────────────────────── */
-    :root {{
-      --ink:        #111827;
-      --ink-2:      #374151;
-      --muted:      #6B7280;
-      --muted-2:    #9CA3AF;
-      --line:       #E5E7EB;
-      --line-2:     #F3F4F6;
-      --bg:         #FFFFFF;
-      --bg-2:       #F9FAFB;
-      --active:     #7C3AED;
-
-      --sig1:       #B91C1C;
-      --sig5:       #15803D;
-      --sig10:      #1D4ED8;
-      --nsig:       #111827;
-
-      --mono: "RM Courier New", "Courier New", monospace;
-      --sans: "RM Courier New", "Courier New", monospace;
-
-      --r-sm:  4px;
-      --r-md:  8px;
-      --shadow-sm: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
-      --shadow-tt: 0 20px 40px rgba(0,0,0,.22), 0 6px 16px rgba(0,0,0,.14);
-      --header-pad-x: 22px;
-    }}
-
-    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-
-    html, body {{ height: 100%; }}
-
-    body {{
-      font-family: var(--sans);
-      font-size: 13px;
-      color: var(--ink);
-      background: var(--bg);
-      -webkit-font-smoothing: antialiased;
-      text-rendering: optimizeLegibility;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }}
-
-    /* ── Header ─────────────────────────────────────────── */
-    header {{
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      padding: 11px var(--header-pad-x) 9px;
-      background: rgba(255,255,255,.95);
-      backdrop-filter: saturate(180%) blur(14px);
-      -webkit-backdrop-filter: saturate(180%) blur(14px);
-    }}
-
-    header::after {{
-      content: "";
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 1px;
-      background: var(--line);
-      pointer-events: none;
-    }}
-
-    .h-row {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }}
-
-    .title-stack {{
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      align-items: flex-start;
-    }}
-
-    .title-meta {{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 3px 10px;
-      border: 1px solid var(--line);
-      border-radius: 99px;
-      background: var(--line-2);
-      font-family: var(--mono);
-      font-size: 10.5px;
-      font-weight: 500;
-      color: var(--muted);
-      white-space: nowrap;
-    }}
-
-    .title-meta .sep {{
-      width: 1px;
-      height: 11px;
-      background: var(--line);
-      display: inline-block;
-    }}
-
-    h1 {{
-      font-family: var(--mono);
-      font-size: 13.5px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
-      color: var(--ink);
-      line-height: 1.35;
-    }}
-
-    .badge {{
-      display: inline-flex;
-      align-items: center;
-      gap: 3px;
-      padding: 2px 7px;
-      border-radius: 99px;
-      font-size: 10.5px;
-      font-weight: 500;
-      letter-spacing: .01em;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      background: var(--line-2);
-    }}
-
-    .leg-meta {{
-      font-family: var(--mono);
-      font-size: 10.5px;
-      font-weight: 600;
-      color: var(--ink-2);
-    }}
-
-    .kbd-row {{
-      margin-left: auto;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 10px;
-      color: var(--muted-2);
-    }}
-
-    kbd {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 18px;
-      height: 18px;
-      padding: 0 4px;
-      border: 1px solid var(--line);
-      border-radius: 3px;
-      background: var(--line-2);
-      font-family: var(--sans);
-      font-size: 9.5px;
-      color: var(--ink-2);
-      box-shadow: 0 1px 0 var(--line);
-    }}
-
-    .subtitle {{
-      margin-top: 2px;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--muted);
-      white-space: pre-wrap;
-      word-break: break-word;
-    }}
-
-    .ctrl-group-title {{
-      font-weight: 700;
-    }}
-
-    /* ── Legend ─────────────────────────────────────────── */
-    .legend {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 8px;
-      flex-wrap: wrap;
-    }}
-
-    .leg-grp {{
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }}
-
-    .leg-item {{
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      font-size: 11px;
-      color: var(--ink-2);
-    }}
-
-    .leg-dot {{
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }}
-
-    .leg-count {{
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-    }}
-
-    .leg-sep {{
-      width: 1px;
-      height: 13px;
-      background: var(--line);
-    }}
-
-    .leg-ci {{
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: var(--muted);
-    }}
-
-    .leg-ci-band {{
-      position: relative;
-      width: 30px;
-      height: 14px;
-    }}
-
-    .leg-ci-band span {{
-      position: absolute;
-      left: 0;
-      right: 0;
-      border-radius: 2px;
-    }}
-
-    .meta-row {{
-      margin-top: 4px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }}
-
-    .rm-tools {{
-      position: relative;
-      margin-top: 10px;
-      padding-top: 10px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--muted);
-    }}
-
-    .rm-tools::before {{
-      content: "";
-      position: absolute;
-      left: calc(-1 * var(--header-pad-x));
-      right: calc(-1 * var(--header-pad-x));
-      top: 0;
-      height: 1px;
-      background: var(--line);
-      pointer-events: none;
-    }}
-
-    .rm-lbl {{
-      color: var(--muted-2);
-      text-transform: uppercase;
-      letter-spacing: .08em;
-      font-weight: 600;
-      font-size: 9.5px;
-    }}
-
-    .rm-seg {{
-      display: inline-flex;
-      background: var(--line-2);
-      border-radius: 5px;
-      padding: 2px;
-      gap: 2px;
-    }}
-
-    .rm-seg button {{
-      background: transparent;
-      border: 0;
-      outline: none;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      color: var(--muted);
-      cursor: pointer;
-      font-weight: 500;
-    }}
-
-    .rm-seg button.active,
-    .rm-seg button[aria-pressed="true"] {{
-      background: #FFFFFF;
-      color: var(--ink);
-      box-shadow: 0 1px 2px rgba(0,0,0,.06);
-    }}
-
-    .rm-seg button:focus,
-    .rm-seg button:focus-visible {{
-      outline: none;
-    }}
-
-    .rm-chip {{
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 2px 8px;
-      border: 1px solid var(--line);
-      border-radius: 99px;
-      color: var(--muted-2);
-      background: #FFFFFF;
-      cursor: pointer;
-      user-select: none;
-      font-size: 10px;
-    }}
-
-    .rm-chip i {{
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      display: inline-block;
-    }}
-
-    .rm-chip.on {{
-      border-color: var(--ink);
-      color: var(--ink);
-      background: var(--bg);
-    }}
-
-    .rm-divider {{
-      width: 1px;
-      height: 14px;
-      background: var(--line);
-    }}
-
-    #chart g[data-spec] {{
-      transition: transform .35s cubic-bezier(.22,.7,.25,1);
-    }}
-
-    #chart g[data-spec].rm-dim > * {{
-      opacity: .13;
-      transition: opacity .2s;
-    }}
-
-    /* ── Layout ─────────────────────────────────────────── */
-    .main-body {{
-      flex: 1;
-      display: flex;
-      min-height: 0;
-      overflow: hidden;
-    }}
-
-    .chart-col {{
-      flex: 1;
-      min-width: 0;
-      overflow-x: hidden;
-      overflow-y: auto;
-    }}
-
-    /* ── Canvas ─────────────────────────────────────────── */
-    .wrap {{
-      padding: 18px 22px 36px;
-    }}
-
-    svg {{
-      width: auto;
-      height: auto;
-      display: block;
-    }}
-
-    .plot-scrollbar {{
-      height: 14px;
-      overflow-x: auto;
-      overflow-y: hidden;
-      margin-top: 8px;
-      scrollbar-gutter: stable;
-    }}
-
-    .plot-scrollbar-inner {{
-      height: 1px;
-    }}
-
-    /* ── SVG element styles ─────────────────────────────── */
-    .axis-label {{
-      font-size: 9px;
-      font-family: var(--sans);
-      fill: #9CA3AF;
-      font-weight: 600;
-      letter-spacing: .08em;
-    }}
-
-    .sticky-x {{
-      pointer-events: none;
-    }}
-
-    .sticky-label {{
-      paint-order: stroke;
-      stroke: #FFFFFF;
-      stroke-width: 4px;
-      stroke-linejoin: round;
-    }}
-
-    .tick-label {{
-      font-size: 9.5px;
-      font-family: var(--mono);
-      fill: #9CA3AF;
-    }}
-
-    .control-label {{
-      font-size: 10px;
-      font-family: var(--mono);
-      fill: var(--control-label-fill, #4B5563);
-      transition: fill .15s ease;
-    }}
-
-    .control-label.active {{
-      fill: var(--active);
-      font-weight: 600;
-    }}
-
-    .control-label-highlight {{
-      fill: none;
-      stroke: #F59E0B;
-      stroke-width: 1;
-    }}
-
-    .sticky-sidebar-bg {{
-      fill: #FFFFFF;
-      pointer-events: none;
-    }}
-
-    .grid-major {{
-      stroke: #E5E7EB;
-      stroke-width: .75;
-    }}
-
-    .grid-minor {{
-      stroke: #F3F4F6;
-      stroke-width: .6;
-    }}
-
-    .zero-line {{
-      stroke: #EF4444;
-      stroke-width: 1.2;
-      stroke-dasharray: 5 4;
-      opacity: .55;
-    }}
-
-    .star-zero-line {{
-      stroke: #EF4444;
-      stroke-width: 1.2;
-      stroke-dasharray: 5 4;
-      opacity: .55;
-    }}
-
-    .star-cell.active {{
-      fill: var(--active);
-    }}
-
-    .star-zero-segment.active {{
-      stroke: var(--active);
-      opacity: 1;
-    }}
-
-    /* CI bands — layered opacities create natural gradient */
-    .ci99 {{ fill: #9CA3AF; opacity: .16; }}
-    .ci95 {{ fill: #6B7280; opacity: .22; }}
-    .ci90 {{ fill: #374151; opacity: .28; }}
-
-    .point {{
-      cursor: crosshair;
-      stroke: none;
-    }}
-
-    .active-ring {{
-      pointer-events: none;
-      fill: none;
-      stroke: var(--active);
-      stroke-width: 2;
-      opacity: 0;
-      transition: opacity .12s ease;
-    }}
-
-    .active-ring.visible {{
-      opacity: 1;
-    }}
-
-    .special-line {{
-      pointer-events: none;
-      opacity: .86;
-      stroke-width: 1.15;
-      transition: opacity .12s ease;
-    }}
-
-    .special-line.hidden {{
-      opacity: 0;
-    }}
-
-    .special-line.disabled {{
-      display: none;
-    }}
-
-    .special-full {{
-      stroke: #FF2F92;
-    }}
-
-    .special-nocontrol {{
-      stroke: #ff8c00;
-    }}
-
-    .guide {{
-      pointer-events: none;
-      opacity: 0;
-      stroke: var(--active);
-      stroke-width: .9;
-      stroke-dasharray: 3 3;
-      transition: opacity .12s ease;
-    }}
-
-    .guide.active {{ opacity: .4; }}
-
-    .matrix-cell {{
-      opacity: 1;
-    }}
-
-    .matrix-cell.group-control-cell {{
-      fill: var(--group-fill);
-    }}
-
-    .matrix-cell.full-control-cell {{
-      fill: #FF2F92;
-    }}
-
-    .matrix-cell.active {{
-      fill: var(--active);
-      opacity: 1;
-    }}
-
-    .obs-bar {{
-      fill: var(--obs-fill, #9CA3AF);
-      opacity: .78;
-    }}
-
-    .obs-bar.active {{
-      fill: var(--active);
-      opacity: 1;
-    }}
-
-    .hoverable {{ cursor: crosshair; }}
-
-    /* ── Info panel ─────────────────────────────────────── */
-    .info-panel {{
-      width: 300px;
-      flex-shrink: 0;
-      border-left: 1px solid var(--line);
-      background: var(--bg);
-      overflow-y: auto;
-    }}
-
-    .panel-placeholder {{
-      padding: 32px 16px;
-      color: var(--muted-2);
-      font-size: 11px;
-      text-align: center;
-      line-height: 1.7;
-    }}
-
-    .panel-head {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px 8px;
-      border-bottom: 1px solid var(--line);
-    }}
-
-    .panel-title {{
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--ink);
-    }}
-
-    .panel-sig {{
-      display: inline-flex;
-      align-items: center;
-      padding: 1px 7px;
-      border-radius: 99px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: .01em;
-    }}
-
-    .panel-table {{
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 2px 10px;
-      padding: 10px 14px;
-    }}
-
-    .panel-key {{
-      color: var(--muted);
-      font-size: 10.5px;
-      align-self: center;
-    }}
-
-    .panel-val {{
-      font-family: var(--mono);
-      font-size: 10.5px;
-      color: var(--ink-2);
-      font-weight: 500;
-      text-align: right;
-    }}
-
-    .panel-divider {{
-      grid-column: 1 / -1;
-      height: 1px;
-      border-top: 1px dotted var(--line);
-      margin: 4px 0;
-    }}
-
-    .panel-controls {{
-      grid-column: 1 / -1;
-      margin-top: 2px;
-      color: var(--muted);
-      font-size: 10px;
-      line-height: 1.45;
-    }}
-
-    .panel-controls em {{
-      font-style: normal;
-      color: var(--ink-2);
-    }}
-
-    /* ── Per-control coefficient list ─────────────────── */
-    .panel-coefs {{
-      grid-column: 1 / -1;
-      display: flex;
-      flex-direction: column;
-      margin-top: 2px;
-    }}
-
-    .panel-coefs-head {{
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      font-family: var(--mono);
-      font-size: 9px;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      color: var(--muted-2);
-      font-weight: 600;
-      padding-bottom: 6px;
-      margin-bottom: 4px;
-    }}
-
-    .panel-coefs-meta {{
-      font-weight: 500;
-      opacity: .85;
-      letter-spacing: 0;
-      text-transform: none;
-    }}
-
-    .coef-group-label {{
-      font-family: var(--mono);
-      font-size: 8.5px;
-      color: var(--muted-2);
-      text-transform: uppercase;
-      letter-spacing: .12em;
-      padding: 8px 14px 4px;
-      font-weight: 600;
-      border-top: 1px solid var(--line);
-      margin: 6px -14px 0;
-    }}
-
-    .coef-group-label .grp-count {{
-      color: var(--muted);
-      font-weight: 500;
-      letter-spacing: 0;
-    }}
-
-    .coef-row {{
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 68px 74px;
-      gap: 12px;
-      align-items: baseline;
-      padding: 4px;
-      border-radius: 3px;
-      font-family: var(--mono);
-      font-size: 10.5px;
-      line-height: 1.25;
-      transition: background .12s;
-    }}
-
-    .coef-row + .coef-row {{
-      border-top: 1px dotted var(--line);
-    }}
-
-    .coef-row:hover {{
-      background: var(--bg-2);
-    }}
-
-    .coef-row.is-test .coef-name {{
-      font-weight: 600;
-    }}
-
-    .coef-name-wrap {{
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-    }}
-
-    .coef-badge {{
-      width: 22px;
-      height: 18px;
-      border-radius: 3px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 22px;
-      font-family: var(--mono);
-      font-size: 9px;
-      font-weight: 700;
-      line-height: 1;
-      font-variant-numeric: tabular-nums;
-      border: 1px solid rgba(17,24,39,.08);
-    }}
-
-    .coef-badge.pos {{ background: #F7DADA; }}
-    .coef-badge.neg {{ background: #DCEBFA; }}
-    .coef-badge.zero {{ background: #E5E7EB; }}
-    .coef-badge.missing {{
-      background: #F3F4F6;
-      color: var(--muted-2);
-    }}
-
-    .coef-name {{
-      color: var(--ink);
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      letter-spacing: 0;
-    }}
-
-    .coef-val {{
-      color: var(--ink);
-      font-variant-numeric: tabular-nums;
-      text-align: right;
-      font-size: 10.5px;
-      letter-spacing: 0;
-      min-width: 0;
-    }}
-
-    .coef-val.placeholder {{
-      color: var(--muted-2);
-    }}
-
-    .coef-val.pos {{
-      color: #B91C1C;
-    }}
-
-    .coef-val.neg {{
-      color: #1D4ED8;
-    }}
-
-    .coef-p {{
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 9.5px;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-      justify-content: flex-end;
-      min-width: 0;
-      white-space: nowrap;
-    }}
-
-    .coef-p.placeholder {{
-      color: var(--muted-2);
-    }}
-
-    .coef-p .coef-stars {{
-      font-weight: 700;
-      letter-spacing: 0;
-      font-size: 11px;
-      color: var(--ink-2);
-    }}
-
-    .coef-empty {{
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted-2);
-      padding: 6px 4px;
-      font-style: italic;
-    }}
-
-    /* ── Print ──────────────────────────────────────────── */
-    @media print {{
-      header {{ position: static; border-bottom: 1px solid #ccc; }}
-      .info-panel {{ display: none; }}
-      .chart-col {{ flex: 1; }}
-    }}
-  </style>
-</head>
-<body class="mode-compact">
-
-<header>
-  <div class="h-row">
-    <div class="title-stack">
-      <div class="title-meta">
-        <span>{n} specs</span>
-        {f'<span class="sep"></span><span>{engine_text}</span>' if engine_text else ""}
-        <span class="sep"></span>
-        <span>{elapsed_text}</span>
-      </div>
-      <h1>Y: {y_title}<br>X: {x_title}</h1>
-    </div>
-    <div class="kbd-row">
-      Navigate <kbd>←</kbd><kbd>→</kbd>&nbsp; Dismiss <kbd>Esc</kbd>
-    </div>
-  </div>
-  {f'<div class="subtitle">{subtitle}</div>' if subtitle else ""}
-  {f'<div class="subtitle">{controls_must_line}</div>' if controls_must_line else ""}
-  {f'<div class="subtitle">{controls_test_line}</div>' if controls_test_line else ""}
-  <div class="meta-row">
-    <span class="leg-meta">@Lachryz</span>
-  </div>
-  <div class="rm-tools">
-    <span class="rm-lbl">Sort</span>
-    <div class="rm-seg" id="rmSort">
-      <button type="button" data-v="coef" aria-pressed="false">coef</button>
-      <button type="button" data-v="obs" aria-pressed="false">obs</button>
-      <button type="button" data-v="signed_p" class="active" aria-pressed="true">sig(coef)/p</button>
-    </div>
-    <span class="rm-divider"></span>
-    <span class="rm-lbl">Significance</span>
-    <span class="rm-chip on" data-sig="3"><i style="background:#B91C1C"></i>p&lt;.01</span>
-    <span class="rm-chip on" data-sig="2"><i style="background:#15803D"></i>p&lt;.05</span>
-    <span class="rm-chip on" data-sig="1"><i style="background:#1D4ED8"></i>p&lt;.10</span>
-    <span class="rm-chip on" data-sig="0"><i style="background:#111827"></i>n.s.</span>
-    <span class="rm-divider"></span>
-    <span class="rm-lbl">CI bands</span>
-    <span class="rm-chip on" data-ci="90"><i style="background:#9CA3AF;opacity:.55"></i>90%</span>
-    <span class="rm-chip on" data-ci="95"><i style="background:#6B7280;opacity:.7"></i>95%</span>
-    <span class="rm-chip on" data-ci="99"><i style="background:#374151;opacity:.85"></i>99%</span>
-    <span class="rm-divider"></span>
-    <span class="rm-lbl">Guides</span>
-    <span class="rm-chip on" data-special="full"><i style="background:#FF2F92"></i>ALL TEST</span>
-    <span class="rm-chip on" data-special="nocontrol"><i style="background:#ff8c00"></i>NO TEST</span>
-  </div>
-</header>
-
-<div class="main-body">
-  <div class="chart-col" id="chart-col">
-    <div class="wrap" id="chart-wrap">
-      {svg_markup}
-    </div>
-  </div>
-  <div class="info-panel" id="info-panel">
-    <div class="panel-placeholder" id="panel-placeholder">Hover or click<br>a specification</div>
-    <div id="panel-content" style="display:none"></div>
-  </div>
-</div>
-
-<script>
-  const DATA       = {data_json};
-  const SIG_COLOR  = {sig_colors_js};
-  const SIG_BG     = {sig_bg_js};
-  const SIG_LABEL  = {sig_labels_js};
-  const records    = DATA.records;
-
-  const panelPlaceholder = document.getElementById("panel-placeholder");
-  const panelContent     = document.getElementById("panel-content");
-  const chartCol = document.getElementById("chart-col");
-  const chartWrap = document.getElementById("chart-wrap");
-  let activeIdx = null;
-  let pinnedIdx = null;
-  let getSortedRecords = () => records.slice();
-
-  /* ── Activation ─────────────────────────────────────── */
-  function activate(idx, pin = false) {{
-    if (pinnedIdx !== null && !pin) return;
-    if (idx === activeIdx) {{
-      if (pin) pinnedIdx = idx;
-      return;
-    }}
-    clearActive(false, true);
-    activeIdx = idx;
-    if (pin) pinnedIdx = idx;
-
-    const r = records[idx];
-
-    /* highlight SVG elements */
-    document.querySelectorAll(`.special-line[data-special-index="${{idx}}"]`)
-      .forEach(el => el.classList.add("hidden"));
-    document.querySelectorAll(`[data-index="${{idx}}"]`)
-      .forEach(el => el.classList.add("active"));
-    const pt = document.querySelector(`.point[data-index="${{idx}}"]`);
-    const ring = document.getElementById("active-ring");
-    if (pt && ring) {{
-      ring.setAttribute("cx", pt.getAttribute("cx"));
-      ring.setAttribute("cy", pt.getAttribute("cy"));
-      const specGroup = document.querySelector(`g[data-spec="${{idx}}"]`);
-      ring.setAttribute("transform", specGroup ? (specGroup.getAttribute("transform") || "") : "");
-      ring.classList.add("visible");
-    }}
-
-    r.included_matrix_controls.forEach(name =>
-      document.querySelectorAll(`.control-label[data-control="${{name}}"]`)
-        .forEach(el => el.classList.add("active"))
-    );
-
-    /* panel content */
-    const star   = r.star;
-    const ci99   = `[${{fmt(r.ci99_lo)}}, ${{fmt(r.ci99_hi)}}]`;
-    const ci90   = `[${{fmt(r.ci90_lo)}}, ${{fmt(r.ci90_hi)}}]`;
-    const ci95   = `[${{fmt(r.ci95_lo)}}, ${{fmt(r.ci95_hi)}}]`;
-    const adjR2  = r.adj_r2 === null || r.adj_r2 === undefined ? "-" : Number(r.adj_r2).toFixed(4);
-    const withinR2 = r.within_r2 === null || r.within_r2 === undefined ? "-" : Number(r.within_r2).toFixed(4);
-    const fStat  = r.f_stat === null || r.f_stat === undefined ? "-" : Number(r.f_stat).toFixed(3);
-    const includedControls = new Set(r.controls_all || []);
-    const testOrder = DATA.controlsTestNames || DATA.matrixControls || [];
-    const mustOrder = DATA.controlsMustNames || [];
-    const testIncl = testOrder.filter(c => includedControls.has(c));
-    const mustIncl = mustOrder.filter(c => includedControls.has(c));
-    const orderedKnown = new Set([...testIncl, ...mustIncl]);
-    const extraIncl = (r.controls_all || []).filter(c => !orderedKnown.has(c));
-    const controlStats = new Map((r.control_stats || []).map(item => [item.name, item]));
-    const coefRow = (name, group) => {{
-      const stat = controlStats.get(name);
-      return `
-        <div class="coef-row ${{group === "test" ? "is-test" : ""}}">
-          <span class="coef-name-wrap">${{controlBadge(stat)}}<span class="coef-name" title="${{escapeHtml(name)}}">${{escapeHtml(name)}}</span></span>
-          ${{stat
-            ? `<span class="coef-val ${{Number(stat.coef) < 0 ? "neg" : "pos"}}">${{fmt(Number(stat.coef))}}</span>
-               <span class="coef-p s${{starLevel(Number(stat.p_value))}}"><span class="coef-stars">${{starsForP(Number(stat.p_value))}}</span><span>${{Number(stat.p_value).toFixed(4)}}</span></span>`
-            : `<span class="coef-val placeholder">-</span><span class="coef-p placeholder"><span class="coef-stars">.</span><span>-</span></span>`}}
-        </div>`;
-    }};
-    const coefBlock = r.controls_all.length === 0
-      ? `<div class="coef-empty">No controls included in this specification.</div>`
-      : `
-        <div class="panel-coefs-head">
-          <span>Control coefficients</span>
-          <span class="panel-coefs-meta">${{testIncl.length}} test · ${{mustIncl.length + extraIncl.length}} must</span>
-        </div>
-        ${{mustIncl.length + extraIncl.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{mustIncl.length + extraIncl.length}})</span></div>${{[...mustIncl, ...extraIncl].map(c => coefRow(c, "base")).join("")}}` : ""}}
-        ${{testIncl.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}})</span></div>${{testIncl.map(c => coefRow(c, "test")).join("")}}` : ""}}
-      `;
-
-    panelContent.innerHTML = `
-      <div class="panel-head">
-        <span class="panel-title">Spec #${{idx + 1}}&thinsp;/&thinsp;${{records.length}}</span>
-        <span class="panel-sig" style="background:${{SIG_BG[star]}};color:${{SIG_COLOR[star]}}">${{SIG_LABEL[star]}}</span>
-      </div>
-      <div class="panel-table">
-        <span class="panel-key">coef</span>        <span class="panel-val">${{r.coef.toFixed(5)}}</span>
-        <span class="panel-key">std&nbsp;err</span> <span class="panel-val">${{r.se.toFixed(5)}}</span>
-        <span class="panel-key">t&#8209;stat</span> <span class="panel-val">${{r.t_value.toFixed(3)}}</span>
-        <span class="panel-key">p&#8209;value</span><span class="panel-val">${{r.p_value.toFixed(4)}}</span>
-        <div class="panel-divider"></div>
-        <span class="panel-key">90% CI</span>      <span class="panel-val">${{ci90}}</span>
-        <span class="panel-key">95% CI</span>      <span class="panel-val">${{ci95}}</span>
-        <span class="panel-key">99% CI</span>      <span class="panel-val">${{ci99}}</span>
-        <div class="panel-divider"></div>
-        <span class="panel-key">obs</span>          <span class="panel-val">${{r.obs.toLocaleString()}}</span>
-        <span class="panel-key">adj&nbsp;R²</span>  <span class="panel-val">${{adjR2}}</span>
-        <span class="panel-key">within&nbsp;R²</span><span class="panel-val">${{withinR2}}</span>
-        <span class="panel-key">F</span>             <span class="panel-val">${{fStat}}</span>
-        <div class="panel-divider"></div>
-        <div class="panel-coefs">${{coefBlock}}</div>
-      </div>`;
-
-    panelPlaceholder.style.display = "none";
-    panelContent.style.display     = "block";
-  }}
-
-  function clearActive(hide = true, force = false) {{
-    if (pinnedIdx !== null && !force) return;
-    document.querySelectorAll("#chart .active").forEach(el => el.classList.remove("active"));
-    document.querySelectorAll(".special-line.hidden")
-      .forEach(el => el.classList.remove("hidden"));
-    const ring = document.getElementById("active-ring");
-    if (ring) {{
-      ring.classList.remove("visible");
-      ring.removeAttribute("transform");
-    }}
-    activeIdx = null;
-    pinnedIdx = null;
-    panelContent.style.display     = "none";
-    panelPlaceholder.style.display = "";
-    if (typeof syncSortButtons === "function") syncSortButtons();
-  }}
-
-  function togglePin(idx, event) {{
-    event.preventDefault();
-    event.stopPropagation();
-    if (pinnedIdx === idx) {{
-      clearActive(true, true);
-      return;
-    }}
-    activate(idx, true);
-  }}
-
-  function fmt(v) {{ return v.toFixed(4); }}
-
-  function starLevel(p) {{
-    return p < 0.01 ? 3 : p < 0.05 ? 2 : p < 0.10 ? 1 : 0;
-  }}
-
-  function starsForP(p) {{
-    const level = starLevel(p);
-    return level === 0 ? "." : "*".repeat(level);
-  }}
-
-  function controlBadge(stat) {{
-    if (!stat) return `<span class="coef-badge missing">--</span>`;
-    const coef = Number(stat.coef);
-    const level = starLevel(Number(stat.p_value));
-    const sign = coef < 0 ? -1 : 1;
-    const signedLevel = sign * level;
-    const label = level === 0
-      ? `0${{sign < 0 ? "-" : "+"}}`
-      : `${{signedLevel > 0 ? "+" : ""}}${{signedLevel}}`;
-    const bgClass = level === 0 ? "zero" : sign < 0 ? "neg" : "pos";
-    const colorByLevel = {{
-      "-3": "#1E3A8A",
-      "-2": "#1D4ED8",
-      "-1": "#60A5FA",
-      "0-": "#4B5563",
-      "0+": "#4B5563",
-      "+1": "#FCA5A5",
-      "+2": "#DC2626",
-      "+3": "#7F1D1D",
-    }};
-    return `<span class="coef-badge ${{bgClass}}" style="color:${{colorByLevel[label] || "#4B5563"}}">${{label}}</span>`;
-  }}
-
-  function escapeHtml(value) {{
-    return String(value)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#39;");
-  }}
-
-  /* ── Internal plot scroller ──────────────────────────── */
-  const svg = document.getElementById("chart");
-  const plotContent = () => Array.from(document.querySelectorAll(".plot-scroll-content"));
-  let plotScrollX = 0;
-  let plotScrollbar = null;
-
-  function applyPlotScroll(x) {{
-    plotScrollX = Math.max(0, Number(x) || 0);
-    plotContent().forEach(group => group.setAttribute("transform", `translate(${{-plotScrollX}},0)`));
-  }}
-
-  function updatePlotViewport() {{
-    if (!svg || !chartCol) return;
-    const left = Number(svg.dataset.left || 0);
-    const right = Number(svg.dataset.right || 0);
-    const basePlotWidth = Number(svg.dataset.basePlotWidth || svg.dataset.plotWidth || 0);
-    const contentWidth = Number(svg.dataset.contentWidth || basePlotWidth);
-    const minPlotWidth = Math.min(contentWidth, Number(svg.dataset.minPlotWidth || 360));
-    const wrapStyle = chartWrap ? getComputedStyle(chartWrap) : null;
-    const wrapPadX = wrapStyle
-      ? parseFloat(wrapStyle.paddingLeft || "0") + parseFloat(wrapStyle.paddingRight || "0")
-      : 0;
-    const availableSvgWidth = Math.max(0, chartCol.clientWidth - wrapPadX);
-    const availablePlotWidth = Math.max(minPlotWidth, availableSvgWidth - left - right);
-    const plotWidth = Math.min(basePlotWidth, contentWidth, availablePlotWidth);
-    const totalWidth = left + right + plotWidth;
-
-    svg.setAttribute("width", totalWidth.toFixed(0));
-    svg.setAttribute("viewBox", `0 0 ${{totalWidth.toFixed(0)}} ${{svg.getAttribute("height")}}`);
-    svg.dataset.plotWidth = plotWidth.toFixed(3);
-
-    const plotRight = left + plotWidth;
-    const labelX = plotRight + 18;
-    svg.querySelectorAll(".plot-clip-rect, .panel-frame, .swimlane-bg").forEach(el => {{
-      el.setAttribute("width", plotWidth.toFixed(3));
-    }});
-    svg.querySelectorAll(".plot-x2").forEach(el => {{
-      el.setAttribute("x2", plotRight.toFixed(3));
-    }});
-    svg.querySelectorAll(".panel-side-label").forEach(el => {{
-      const mid = Number(el.dataset.mid || el.getAttribute("y") || 0);
-      el.setAttribute("x", labelX.toFixed(3));
-      el.setAttribute("transform", `rotate(90 ${{labelX.toFixed(3)}} ${{mid.toFixed(3)}})`);
-    }});
-    if (plotScrollbar) {{
-      plotScrollbar.style.marginLeft = `${{left}}px`;
-      plotScrollbar.style.width = `${{plotWidth}}px`;
-    }}
-  }}
-
-  function initPlotScroller() {{
-    if (!svg || !plotContent().length || !chartWrap) return;
-    const left = Number(svg.dataset.left || 0);
-    const plotWidth = Number(svg.dataset.plotWidth || 0);
-    const contentWidth = Number(svg.dataset.contentWidth || plotWidth);
-    if (contentWidth <= plotWidth + 0.5) return;
-
-    const scrollbar = document.createElement("div");
-    scrollbar.className = "plot-scrollbar";
-    scrollbar.style.marginLeft = `${{left}}px`;
-    scrollbar.style.width = `${{plotWidth}}px`;
-    scrollbar.setAttribute("aria-label", "Scroll specifications horizontally");
-    plotScrollbar = scrollbar;
-
-    const inner = document.createElement("div");
-    inner.className = "plot-scrollbar-inner";
-    inner.style.width = `${{contentWidth}}px`;
-    scrollbar.appendChild(inner);
-    chartWrap.appendChild(scrollbar);
-
-    scrollbar.addEventListener("scroll", () => applyPlotScroll(scrollbar.scrollLeft), {{ passive: true }});
-    svg.addEventListener("wheel", event => {{
-      const horizontal = Math.abs(event.deltaX) >= Math.abs(event.deltaY);
-      if (!horizontal && !event.shiftKey) return;
-      event.preventDefault();
-      const delta = horizontal ? event.deltaX : event.deltaY;
-      scrollbar.scrollLeft += delta;
-      applyPlotScroll(scrollbar.scrollLeft);
-    }}, {{ passive: false }});
-    applyPlotScroll(0);
-  }}
-
-  function syncStickyLabels() {{
-    document.querySelectorAll(".sticky-x")
-      .forEach(el => el.setAttribute("transform", "translate(0,0)"));
-  }}
-
-  if (chartCol) {{
-    chartCol.addEventListener("scroll", syncStickyLabels, {{ passive: true }});
-    updatePlotViewport();
-    initPlotScroller();
-    updatePlotViewport();
-    window.addEventListener("resize", updatePlotViewport, {{ passive: true }});
-    syncStickyLabels();
-  }}
-
-  /* ── Keyboard navigation ─────────────────────────────── */
-  document.addEventListener("keydown", e => {{
-    const n = records.length;
-    if (!n) return;
-
-    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {{
-      e.preventDefault();
-      const arr = getSortedRecords();
-      const sn = arr.length;
-      if (!sn) return;
-      let curPos = activeIdx !== null
-        ? arr.findIndex(r => Number(r.index) === activeIdx)
-        : -1;
-      if (curPos === -1 && e.key === "ArrowLeft") curPos = sn;
-      const nextPos = e.key === "ArrowRight"
-        ? Math.min(curPos + 1, sn - 1)
-        : Math.max(curPos - 1, 0);
-      pinnedIdx = null;
-      activate(Number(arr[nextPos].index));
-    }}
-
-    if (e.key === "Escape") clearActive(true, true);
-  }});
-
-  /* ── Header options ─────────────────────────────────── */
-  (function initHeaderOptions() {{
-    const svg = document.getElementById("chart");
-    if (!svg || !records.length) return;
-
-    const left = Number(svg.dataset.left || 0);
-    const right = Number(svg.dataset.right || 0);
-    const xStep = Number(svg.dataset.xStep || 7);
-    const firstX = left + xStep * 0.5;
-    const plotRight = Number(svg.dataset.plotRight || (Number(svg.getAttribute("width")) - right));
-    const starY = Number(svg.dataset.starY || 20);
-    const starBottom = Number(svg.dataset.starBottom || 86);
-    const coefY = Number(svg.dataset.coefY || 98);
-    const coefBottom = Number(svg.dataset.coefBottom || 394);
-    const matrixY = Number(svg.dataset.matrixY || 406);
-    const matrixBottom = Number(svg.dataset.matrixBottom || 622);
-    const obsY = Number(svg.dataset.obsY || 646);
-    const obsBottom = Number(svg.dataset.obsBottom || 734);
-
-    const byIdx = {{}};
-    svg.querySelectorAll("[data-index]").forEach(el => {{
-      const idx = el.getAttribute("data-index");
-      (byIdx[idx] = byIdx[idx] || []).push(el);
-    }});
-
-    Object.keys(byIdx).forEach(idx => {{
-      const els = byIdx[idx];
-      if (!els.length || els[0].closest("g[data-spec]")) return;
-      const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
-      group.setAttribute("data-spec", idx);
-      els[0].parentNode.insertBefore(group, els[0]);
-      els.forEach(el => group.appendChild(el));
-    }});
-
-    const origCol = {{}};
-    records.forEach((r, pos) => {{ origCol[r.index] = pos; }});
-
-    const coefMin = Number(svg.dataset.coefMin);
-    const coefMax = Number(svg.dataset.coefMax);
-    const yCoef = v => {{
-      if (!Number.isFinite(coefMin) || !Number.isFinite(coefMax) || Math.abs(coefMax - coefMin) < 1e-12) {{
-        return coefY + (coefBottom - coefY) / 2;
-      }}
-      const t = (Number(v) - coefMin) / (coefMax - coefMin);
-      return coefBottom - t * (coefBottom - coefY);
-    }};
-
-    const state = {{
-      sort: "signed_p",
-      sigFilter: new Set([0, 1, 2, 3]),
-    }};
-
-    function sortedRecords() {{
-      const arr = records.slice();
-      if (state.sort === "coef") arr.sort((a, b) => a.coef - b.coef);
-      else if (state.sort === "signed_p") {{
-        arr.sort((a, b) => {{
-          const scoreA = (a.coef < 0 ? -1 : 1) / Math.max(a.p_value, Number.MIN_VALUE);
-          const scoreB = (b.coef < 0 ? -1 : 1) / Math.max(b.p_value, Number.MIN_VALUE);
-          return scoreA - scoreB;
-        }});
-      }} else if (state.sort === "obs") arr.sort((a, b) => a.obs - b.obs);
-      return arr;
-    }}
-    getSortedRecords = sortedRecords;
-
-    function isDimmed(record) {{
-      if (!state.sigFilter.has(record.star)) return true;
-      return false;
-    }}
-
-    function ciPath(arr, loKey, hiKey, colW) {{
-      if (!arr.length) return "";
-      const upper = arr.map((r, pos) => {{
-        const x = firstX + pos * colW;
-        return `${{pos ? "L" : "M"}} ${{x.toFixed(3)}} ${{yCoef(r[hiKey]).toFixed(3)}}`;
-      }});
-      const lower = [];
-      for (let pos = arr.length - 1; pos >= 0; pos--) {{
-        const x = firstX + pos * colW;
-        lower.push(`L ${{x.toFixed(3)}} ${{yCoef(arr[pos][loKey]).toFixed(3)}}`);
-      }}
-      return [...upper, ...lower, "Z"].join(" ");
-    }}
-
-    function updateSpecialLines(arr, colW) {{
-      svg.querySelectorAll(".special-line").forEach(line => {{
-        const idx = Number(line.getAttribute("data-special-index"));
-        const pos = arr.findIndex(r => Number(r.index) === idx);
-        if (pos < 0) return;
-        const x = firstX + pos * colW;
-        const r = records[idx];
-        if (!r) return;
-        const cy = yCoef(Number(r.coef));
-        const gap = 4.8;
-        const d = [
-          `M ${{x.toFixed(3)}} ${{starY}} L ${{x.toFixed(3)}} ${{starBottom}}`,
-          `M ${{x.toFixed(3)}} ${{coefY}} L ${{x.toFixed(3)}} ${{Math.max(coefY, cy - gap).toFixed(3)}}`,
-          `M ${{x.toFixed(3)}} ${{Math.min(coefBottom, cy + gap).toFixed(3)}} L ${{x.toFixed(3)}} ${{coefBottom}}`,
-          `M ${{x.toFixed(3)}} ${{matrixY}} L ${{x.toFixed(3)}} ${{matrixBottom}}`,
-          `M ${{x.toFixed(3)}} ${{obsY}} L ${{x.toFixed(3)}} ${{obsBottom}}`,
-        ].join(" ");
-        line.setAttribute("d", d);
-      }});
-    }}
-
-    function renderHeaderOptions() {{
-      const arr = sortedRecords();
-      const colW = xStep;
-
-      arr.forEach((record, newPos) => {{
-        const group = svg.querySelector(`g[data-spec="${{record.index}}"]`);
-        if (!group) return;
-        const oldX = firstX + (origCol[record.index] || 0) * xStep;
-        const newX = firstX + newPos * colW;
-        const scaleX = colW / xStep;
-        const dx = newX - oldX * scaleX;
-        group.setAttribute("transform", `translate(${{dx.toFixed(3)}},0) scale(${{scaleX.toFixed(5)}},1)`);
-        group.classList.toggle("rm-dim", isDimmed(record));
-      }});
-
-      [["ci99", "ci99_lo", "ci99_hi"], ["ci95", "ci95_lo", "ci95_hi"], ["ci90", "ci90_lo", "ci90_hi"]]
-        .forEach(([cls, loKey, hiKey]) => {{
-          const path = svg.querySelector(`path.${{cls}}`);
-          if (path) path.setAttribute("d", ciPath(arr, loKey, hiKey, colW));
-        }});
-
-      updateSpecialLines(arr, colW);
-      if (activeIdx !== null) {{
-        const group = svg.querySelector(`g[data-spec="${{activeIdx}}"]`);
-        const ring = document.getElementById("active-ring");
-        if (ring) ring.setAttribute("transform", group ? (group.getAttribute("transform") || "") : "");
-      }}
-      syncStickyLabels();
-    }}
-
-    const sortEl = document.getElementById("rmSort");
-    function syncSortButtons() {{
-      if (!sortEl) return;
-      sortEl.querySelectorAll("button").forEach(item => {{
-        const selected = item.dataset.v === state.sort;
-        item.classList.toggle("active", selected);
-        item.setAttribute("aria-pressed", selected ? "true" : "false");
-      }});
-    }}
-    if (sortEl) {{
-      syncSortButtons();
-      sortEl.addEventListener("click", event => {{
-        const button = event.target.closest("button");
-        if (!button) return;
-        state.sort = button.dataset.v || "coef";
-        syncSortButtons();
-        renderHeaderOptions();
-      }});
-    }}
-    renderHeaderOptions();
-
-    document.querySelectorAll(".rm-chip[data-sig]").forEach(chip => {{
-      chip.addEventListener("click", () => {{
-        const star = Number(chip.dataset.sig);
-        if (state.sigFilter.has(star)) {{
-          if (state.sigFilter.size <= 1) return;
-          state.sigFilter.delete(star);
-        }} else {{
-          state.sigFilter.add(star);
-        }}
-        chip.classList.toggle("on", state.sigFilter.has(star));
-        renderHeaderOptions();
-      }});
-    }});
-
-    document.querySelectorAll(".rm-chip[data-ci]").forEach(chip => {{
-      chip.addEventListener("click", () => {{
-        const ci = chip.dataset.ci;
-        const enabled = !chip.classList.contains("on");
-        chip.classList.toggle("on", enabled);
-        const path = svg.querySelector(`path.ci${{ci}}`);
-        if (path) path.style.display = enabled ? "" : "none";
-      }});
-    }});
-
-    document.querySelectorAll(".rm-chip[data-special]").forEach(chip => {{
-      chip.addEventListener("click", () => {{
-        const kind = chip.dataset.special;
-        const enabled = !chip.classList.contains("on");
-        chip.classList.toggle("on", enabled);
-        const cls = kind === "full" ? "special-full" : "special-nocontrol";
-        const specialColor = kind === "full" ? "#FF2F92" : "#ff8c00";
-        const obsNormal = "{_OBS_FILL}";
-
-        svg.querySelectorAll(`.special-line.${{cls}}`)
-          .forEach(line => line.classList.toggle("disabled", !enabled));
-
-        svg.querySelectorAll(`.star-cell[data-special="${{kind}}"]`)
-          .forEach(cell => {{
-            cell.setAttribute("fill", enabled ? specialColor : (cell.dataset.normalFill || "#D98A8A"));
-          }});
-
-        svg.querySelectorAll(`.matrix-cell[data-special="${{kind}}"]`)
-          .forEach(cell => {{
-            const m = (cell.getAttribute("style") || "").match(/--normal-fill:\\s*([^;]+)/);
-            cell.setAttribute("fill", enabled ? specialColor : (m ? m[1].trim() : "#1F2937"));
-          }});
-
-        svg.querySelectorAll(`.obs-bar[data-special="${{kind}}"]`)
-          .forEach(bar => {{
-            if (enabled) {{
-              bar.style.setProperty("--obs-fill", specialColor);
-              bar.style.opacity = "1";
-            }} else {{
-              bar.style.setProperty("--obs-fill", obsNormal);
-              bar.style.removeProperty("opacity");
-            }}
-          }});
-      }});
-    }});
-
-    renderHeaderOptions();
-  }})();
-</script>
-</body>
-</html>
-"""
-
-
-# ── SVG builder ───────────────────────────────────────────────────────────────
-
-
-def _fmt(v: float) -> str:
-    s = f"{v:.3f}".rstrip("0").rstrip(".")
-    return s or "0"
-
-
-def _svg_attrs(attrs: dict[str, Any]) -> str:
-    return " ".join(
-        f'{k}="{html.escape(str(v), quote=True)}"'
-        for k, v in attrs.items()
-        if v is not None
-    )
-
-
-def _tag(name: str, attrs: dict[str, Any], text: str | None = None) -> str:
-    a = _svg_attrs(attrs)
-    if text is None:
-        return f"<{name} {a}/>"
-    return f"<{name} {a}>{html.escape(text)}</{name}>"
-
-
-def _scale(value: float, lo: float, hi: float, top: float, height: float) -> float:
-    if hi == lo:
-        return top + height / 2
-    return top + height - ((value - lo) / (hi - lo)) * height
-
-
-def _ci_path(
-    records: list[dict],
-    x_fn: Any,
-    y_fn: Any,
-    lo: str,
-    hi: str,
-    *,
-    x_left: float | None = None,
-    x_right: float | None = None,
-) -> str:
-    if not records:
-        return ""
-    upper: list[str] = []
-    if x_left is not None:
-        upper.append(f"M {_fmt(x_left)} {_fmt(y_fn(float(records[0][hi])))}")
-    for i, r in enumerate(records):
-        command = "M" if i == 0 and not upper else "L"
-        upper.append(f"{command} {_fmt(x_fn(i))} {_fmt(y_fn(float(r[hi])))}")
-    if x_right is not None:
-        upper.append(f"L {_fmt(x_right)} {_fmt(y_fn(float(records[-1][hi])))}")
-
-    lower: list[str] = []
-    if x_right is not None:
-        lower.append(f"L {_fmt(x_right)} {_fmt(y_fn(float(records[-1][lo])))}")
-    lower.extend(
-        f"L {_fmt(x_fn(i))} {_fmt(y_fn(float(r[lo])))}"
-        for i, r in reversed(list(enumerate(records)))
-    )
-    if x_left is not None:
-        lower.append(f"L {_fmt(x_left)} {_fmt(y_fn(float(records[0][lo])))}")
-    return " ".join(upper + lower + ["Z"])
-
-
-def _build_svg(payload: dict[str, Any]) -> tuple[str, int, int]:
-    records = list(payload["records"])
-    controls = list(payload["matrixControls"])
-    alt_groups = list(payload.get("matrixAltGroups", []))
-    controls_test_names = set(_payload_controls_test_names(payload))
-    n = len(records)
-    three_star_records = [r for r in records if int(r.get("star", 0)) == 3]
-    starred_controls = {
-        name
-        for name in controls
-        if name in controls_test_names
-        and three_star_records
-        and all(name in set(r.get("included_matrix_controls", [])) for r in three_star_records)
-    }
-    alt_group_color_by_control: dict[str, str] = {}
-    color_idx = 0
-    for grp in alt_groups:
-        if str(grp.get("kind", "")) != "controls_test":
-            continue
-        s = int(grp.get("start", -1))
-        e = int(grp.get("end", -1))
-        if s < 0 or e <= s or e >= len(controls):
-            continue
-        fill = _ALT_GROUP_COLORS[color_idx % len(_ALT_GROUP_COLORS)]
-        color_idx += 1
-        for row in range(s, e + 1):
-            alt_group_color_by_control[str(controls[row])] = fill
-
-    # ── Geometry ──────────────────────────────────────────
-    label_chars = max([len(str(c)) for c in controls] + [8])
-    grp_pad = 46 if alt_groups else 0
-    left = max(160, min(440, 76 + label_chars * 7 + grp_pad))
-    right = 82
-    top = 20
-
-    star_h = 66
-    coef_h = 296
-    row_h = 18
-    matrix_pad = 0
-    matrix_h = max(row_h, len(controls) * row_h)
-    obs_h = 88
-    gap = 12
-
-    x_step = 7 if n <= 1600 else 5
-    content_w = max(420, n * x_step)
-    plot_w_min = min(content_w, _MAX_HTML_PANEL_PLOT_WIDTH)
-    width = int(left + right + plot_w_min)
-    plot_w = width - left - right
-
-    star_y = top
-    coef_y = star_y + star_h + gap
-    matrix_y = coef_y + coef_h + gap
-    obs_y = matrix_y + matrix_h + gap + 12
-
-    height = int(obs_y + obs_h + 22)
-
-    def xc(i: int) -> float:
-        return left + x_step * (i + 0.5)
-
-    # ── Value ranges ──────────────────────────────────────
-    if records:
-        clo = min(float(r["ci99_lo"]) for r in records)
-        chi = max(float(r["ci99_hi"]) for r in records)
-        if clo == chi:
-            clo -= 1
-            chi += 1
-        else:
-            pad = (chi - clo) * 0.09
-            clo -= pad
-            chi += pad
-        obs_values = [int(r["obs"]) for r in records]
-        obs_min = min(obs_values)
-        obs_max = max(obs_values)
-        obs_mean = sum(obs_values) / len(obs_values)
-    else:
-        clo, chi, obs_min, obs_max, obs_mean = -1.0, 1.0, 0, 1, 0.0
-
-    def cy(v: float) -> float:
-        return _scale(v, clo, chi, coef_y, coef_h)
-
-    def oy(v: float) -> float:
-        lo = min(float(obs_min), float(obs_mean), float(obs_max))
-        hi = max(float(obs_min), float(obs_mean), float(obs_max))
-        if lo == hi:
-            lo -= 1
-            hi += 1
-        else:
-            pad = (hi - lo) * 0.06
-            lo -= pad
-            hi += pad
-        return _scale(v, lo, hi, obs_y, obs_h)
-
-    def sy(v: float) -> float:
-        return star_y + star_h / 2 - (v / 3) * (star_h / 2 - 9)
-
-    # ── Build ─────────────────────────────────────────────
-    p: list[str] = []
-
-    p.append(
-        f'<svg id="chart" role="img"'
-        f' aria-label="{html.escape(str(payload["title"]), quote=True)}"'
-        f' width="{width}" height="{height}"'
-        f' viewBox="0 0 {width} {height}"'
-        f' data-left="{_fmt(left)}" data-right="{_fmt(right)}"'
-        f' data-x-step="{_fmt(x_step)}" data-plot-width="{_fmt(plot_w)}"'
-        f' data-base-plot-width="{_fmt(plot_w)}" data-min-plot-width="360"'
-        f' data-content-width="{_fmt(content_w)}" data-plot-right="{_fmt(left + content_w)}"'
-        f' data-star-y="{_fmt(star_y)}" data-star-bottom="{_fmt(star_y + star_h)}"'
-        f' data-coef-y="{_fmt(coef_y)}" data-coef-bottom="{_fmt(coef_y + coef_h)}"'
-        f' data-coef-min="{_fmt(clo)}" data-coef-max="{_fmt(chi)}"'
-        f' data-matrix-y="{_fmt(matrix_y)}" data-matrix-bottom="{_fmt(matrix_y + matrix_h)}"'
-        f' data-obs-y="{_fmt(obs_y)}" data-obs-bottom="{_fmt(obs_y + obs_h)}"'
-        f' xmlns="http://www.w3.org/2000/svg">'
-    )
-    p.append(
-        f'<defs><clipPath id="plot-clip"><rect class="plot-clip-rect" x="{_fmt(left)}" y="{_fmt(star_y)}" '
-        f'width="{_fmt(plot_w)}" height="{_fmt(obs_y + obs_h - star_y)}"/></clipPath></defs>'
-    )
-    p.append(
-        _tag(
-            "rect",
-            {
-                "x": "0",
-                "y": _fmt(star_y),
-                "width": _fmt(left - 1),
-                "height": _fmt(obs_y + obs_h - star_y),
-                "class": "sticky-sidebar-bg",
-            },
-        )
-    )
-
-    # ── Panel rects ───────────────────────────────────────
-    panels = [
-        (star_y, star_h, "STARS"),
-        (coef_y, coef_h, "COEF"),
-        (matrix_y, matrix_h, "CONTROLS"),
-        (obs_y, obs_h, "OBS"),
-    ]
-    for py_, ph, label in panels:
-        # subtle background
-        p.append(
-            _tag(
-                "rect",
-                {
-                    "x": left,
-                    "y": _fmt(py_),
-                    "width": plot_w,
-                    "height": _fmt(ph),
-                    "fill": "#FFFFFF",
-                    "stroke": "#D1D5DB",
-                    "stroke-width": "0.75",
-                    "rx": "2",
-                    "class": "panel-frame",
-                },
-            )
-        )
-        # panel label on the right side of the frame
-        label_x = width - right + 18
-        mid = py_ + ph / 2
-        p.append(
-            f'<text x="{_fmt(label_x)}" y="{_fmt(mid)}"'
-            f' class="axis-label panel-side-label" data-mid="{_fmt(mid)}" text-anchor="middle"'
-            f' dominant-baseline="middle" transform="rotate(90 {_fmt(label_x)} {_fmt(mid)})"'
-            f">{html.escape(label)}</text>"
-        )
-
-    # ── Coef grid lines (5 levels) ────────────────────────
-    for j in range(5):
-        frac = j / 4
-        gy = coef_y + coef_h * frac
-        gv = chi - (chi - clo) * frac
-        cls = "grid-major" if j in (0, 2, 4) else "grid-minor"
-        p.append(
-            _tag(
-                "line",
-                {
-                    "x1": left,
-                    "x2": left + plot_w,
-                    "y1": _fmt(gy),
-                    "y2": _fmt(gy),
-                    "class": f"{cls} plot-x2",
-                },
-            )
-        )
-        p.append(
-            _tag(
-                "text",
-                {
-                    "x": left - 7,
-                    "y": _fmt(gy + 3.5),
-                    "text-anchor": "end",
-                    "class": "tick-label sticky-x sticky-label",
-                },
-                f"{gv:.3f}",
-            )
-        )
-
-    # ── Zero lines ────────────────────────────────────────
-    p.append(
-        _tag(
-            "line",
-            {
-                "x1": left,
-                "x2": left + plot_w,
-                "y1": _fmt(cy(0)),
-                "y2": _fmt(cy(0)),
-                "class": "zero-line plot-x2",
-            },
-        )
-    )
-
-    # ── Obs guide line and labels ─────────────────────────
-    if records:
-        obs_ticks = [
-            ("max", float(obs_max)),
-            ("mean", float(obs_mean)),
-            ("min", float(obs_min)),
-        ]
-        for label, value in obs_ticks:
-            y_tick = oy(value)
-            p.append(
-                _tag(
-                    "line",
-                    {
-                        "x1": left,
-                        "x2": left + plot_w,
-                        "y1": _fmt(y_tick),
-                        "y2": _fmt(y_tick),
-                        "stroke": "#F3F4F6",
-                        "stroke-width": "0.7",
-                        "class": "zero-line plot-x2" if label == "mean" else "plot-x2",
-                    },
-                )
-            )
-            p.append(
-                _tag(
-                    "text",
-                    {
-                        "x": left - 7,
-                        "y": _fmt(y_tick + 3.5),
-                        "text-anchor": "end",
-                        "class": "tick-label sticky-x sticky-label",
-                    },
-                    f"{value:,.0f}",
-                )
-            )
-    p.append(
-        _tag(
-            "line",
-            {
-                "x1": left,
-                "x2": left + plot_w,
-                "y1": _fmt(sy(0)),
-                "y2": _fmt(sy(0)),
-                "class": "star-zero-line plot-x2",
-            },
-            )
-        )
-
-    p.append('<g clip-path="url(#plot-clip)"><g class="plot-scroll-content">')
-
-    # ── CI bands ─────────────────────────────────────────
-    if records:
-        p.append(
-            _tag(
-                "path",
-                {
-                    "d": _ci_path(
-                        records,
-                        xc,
-                        cy,
-                        "ci99_lo",
-                        "ci99_hi",
-                        x_left=left,
-                        x_right=left + content_w,
-                    ),
-                    "class": "ci99",
-                },
-            )
-        )
-        p.append(
-            _tag(
-                "path",
-                {
-                    "d": _ci_path(
-                        records,
-                        xc,
-                        cy,
-                        "ci95_lo",
-                        "ci95_hi",
-                        x_left=left,
-                        x_right=left + content_w,
-                    ),
-                    "class": "ci95",
-                },
-            )
-        )
-        p.append(
-            _tag(
-                "path",
-                {
-                    "d": _ci_path(
-                        records,
-                        xc,
-                        cy,
-                        "ci90_lo",
-                        "ci90_hi",
-                        x_left=left,
-                        x_right=left + content_w,
-                    ),
-                    "class": "ci90",
-                },
-            )
-        )
-
-    p.append("</g></g>")
-
-    # ── Matrix control labels & row separators ────────────
-    label_x = left - 36 if alt_groups else left - 8
-
-    for row, name in enumerate(controls):
-        ry = matrix_y + matrix_pad + row * row_h
-        group_label_fill = alt_group_color_by_control.get(str(name))
-        label_text = str(name)
-        if name in starred_controls:
-            highlight_w = max(26, len(label_text) * 6.2 + 6)
-            p.append(
-                _tag(
-                    "rect",
-                    {
-                        "x": _fmt(label_x - highlight_w + 3),
-                        "y": _fmt(ry + 3),
-                        "width": _fmt(highlight_w),
-                        "height": _fmt(row_h - 5),
-                        "rx": "2",
-                        "class": "control-label-highlight sticky-x",
-                    },
-                )
-            )
-        p.append(
-            _tag(
-                "text",
-                {
-                    "x": label_x,
-                    "y": _fmt(ry + row_h * 0.65),
-                    "text-anchor": "end",
-                    "class": "control-label sticky-x sticky-label",
-                    "style": f"--control-label-fill: {group_label_fill}" if group_label_fill else None,
-                    "data-control": name,
-                },
-                label_text,
-            )
-        )
-        p.append(
-            _tag(
-                "line",
-                {
-                    "x1": left,
-                    "x2": left + plot_w,
-                    "y1": _fmt(ry),
-                    "y2": _fmt(ry),
-                    "stroke": "#F3F4F6",
-                    "stroke-width": "0.6",
-                    "class": "plot-x2",
-                },
-            )
-        )
-    if controls:
-        p.append(
-            _tag(
-                "line",
-                {
-                    "x1": left,
-                    "x2": left + plot_w,
-                    "y1": _fmt(matrix_y + matrix_h),
-                    "y2": _fmt(matrix_y + matrix_h),
-                    "stroke": "#F3F4F6",
-                    "stroke-width": "0.6",
-                    "class": "plot-x2",
-                },
-            )
-        )
-
-    # ── Alt-group bracket markers ─────────────────────────
-    for grp in alt_groups:
-        s = int(grp.get("start", -1))
-        e = int(grp.get("end", -1))
-        if s < 0 or e < s or e >= len(controls):
-            continue
-        y0 = matrix_y + matrix_pad + s * row_h
-        y1 = matrix_y + matrix_pad + (e + 1) * row_h
-        xm = left - 18
-        is_test = str(grp.get("kind", "")) == "controls_test"
-        if is_test and y1 - y0 > 6:
-            y0 += 2
-            y1 -= 2
-        dash = "4 3" if is_test else None
-        marker_color = (
-            alt_group_color_by_control.get(str(controls[s]), "#6B7280")
-            if is_test
-            else "#6B7280"
-        )
-        for attrs, line_dash in [
-            ({"x1": xm, "x2": xm, "y1": _fmt(y0), "y2": _fmt(y1)}, dash),
-            ({"x1": _fmt(xm - 6), "x2": _fmt(xm + 6), "y1": _fmt(y0), "y2": _fmt(y0)}, None),
-            ({"x1": _fmt(xm - 6), "x2": _fmt(xm + 6), "y1": _fmt(y1), "y2": _fmt(y1)}, None),
-        ]:
-            p.append(
-                _tag(
-                    "line",
-                    {
-                        **attrs,
-                        "class": "alt-marker sticky-x",
-                        "stroke": marker_color,
-                        "stroke-width": "1.4",
-                        "stroke-linecap": "square",
-                        "stroke-dasharray": line_dash,
-                    },
-                )
-            )
-
-    # ── Matrix run-length colors, same idea as PNG output ─
-    matrix_cell_fill: dict[tuple[int, int], str] = {}
-    row_runs: list[tuple[int, int, int]] = []
-    max_run_len = 1
-    for row, name in enumerate(controls):
-        start: int | None = None
-        for idx, rec in enumerate(records + [{"included_matrix_controls": []}]):
-            included = name in set(rec["included_matrix_controls"])
-            if included and start is None:
-                start = idx
-            elif not included and start is not None:
-                run_len = idx - start
-                row_runs.append((row, start, idx))
-                max_run_len = max(max_run_len, run_len)
-                start = None
-    for row, start, end in row_runs:
-        run_len = end - start
-        t = (run_len / max_run_len) ** 0.6
-        value = round(200 - 200 * t)
-        fill = f"rgb({value},{value},{value})"
-        for idx in range(start, end):
-            matrix_cell_fill[(row, idx)] = fill
-
-    # ── Swimlane backgrounds for alt groups ───────────────
-    for grp in alt_groups:
-        s = int(grp.get("start", -1))
-        e = int(grp.get("end", -1))
-        if s < 0 or e <= s or e >= len(controls):
-            continue
-        grp_color = alt_group_color_by_control.get(str(controls[s]), _ALT_GROUP_COLORS[0])
-        ry0 = matrix_y + s * row_h
-        p.append(
-            _tag(
-                "rect",
-                {
-                    "x": _fmt(left),
-                    "y": _fmt(ry0),
-                    "width": _fmt(width - left - right),
-                    "height": _fmt((e - s + 1) * row_h),
-                    "fill": grp_color,
-                    "opacity": "0.12",
-                    "pointer-events": "none",
-                    "class": "swimlane-bg",
-                },
-            )
-        )
-
-    # ── Per-record elements ────────────────────────────────
-    p.append('<g clip-path="url(#plot-clip)"><g class="plot-scroll-content">')
-    for idx, rec in enumerate(records):
-        x = xc(idx)
-        star = int(rec["star"])
-        coef = float(rec["coef"])
-        color = rec["color"]
-        _show_sp_star = payload.get("showSpecialMarkers", True)
-        _is_full_star = _show_sp_star and bool(rec.get("is_full", False))
-        _is_noc_star = _show_sp_star and bool(rec.get("is_no_controls_test", False))
-        star_fill = (
-            "#FF2F92" if _is_full_star
-            else "#ff8c00" if _is_noc_star
-            else (_STAR_NEG if coef < 0 else _STAR_POS)
-        )
-        dirn = -1 if coef < 0 else 1
-
-        # Star block
-        if star:
-            _normal_star_fill = _STAR_NEG if coef < 0 else _STAR_POS
-            for blk in range(star):
-                by = sy(dirn * (blk + 0.74))
-                _star_attrs: dict[str, Any] = {
-                    "x": _fmt(x - x_step * 0.36),
-                    "y": _fmt(by - 3.6),
-                    "width": max(1, x_step * 0.72),
-                    "height": 7,
-                    "rx": "1",
-                    "fill": star_fill,
-                    "class": "star-cell",
-                    "data-index": idx,
-                }
-                if _is_full_star:
-                    _star_attrs["data-special"] = "full"
-                    _star_attrs["data-normal-fill"] = _normal_star_fill
-                elif _is_noc_star:
-                    _star_attrs["data-special"] = "nocontrol"
-                    _star_attrs["data-normal-fill"] = _normal_star_fill
-                p.append(_tag("rect", _star_attrs))
-
-        # Coefficient point
-        p.append(
-            _tag(
-                "circle",
-                {
-                    "cx": _fmt(x),
-                    "cy": _fmt(cy(coef)),
-                    "r": "3.2",
-                    "fill": color,
-                    "class": "point hoverable",
-                    "data-index": idx,
-                },
-            )
-        )
-
-        # Control matrix cells
-        included = set(rec["included_matrix_controls"])
-        for row, name in enumerate(controls):
-            if name not in included:
-                continue
-            ry = matrix_y + matrix_pad + row * row_h
-            normal_fill = matrix_cell_fill.get((row, idx), "#1F2937")
-            group_fill = alt_group_color_by_control.get(str(name))
-            cell_fill = (
-                "#FF2F92" if _is_full_star
-                else "#ff8c00" if _is_noc_star
-                else normal_fill
-            )
-            _cell_attrs: dict[str, Any] = {
-                "x": _fmt(x - x_step * 0.40),
-                "y": _fmt(ry + 2),
-                "width": max(1, x_step * 0.80),
-                "height": row_h - 4,
-                "rx": "1.5",
-                "fill": cell_fill,
-                "style": f"--normal-fill: {normal_fill}; --group-fill: {group_fill or normal_fill}",
-                "class": "matrix-cell",
-                "data-index": idx,
-                "data-control": name,
-            }
-            if _is_full_star:
-                _cell_attrs["data-special"] = "full"
-            elif _is_noc_star:
-                _cell_attrs["data-special"] = "nocontrol"
-            p.append(_tag("rect", _cell_attrs))
-
-        # Obs bar
-        obs_value = int(rec["obs"])
-        obs_base_y = oy(float(obs_mean))
-        obs_value_y = oy(float(obs_value))
-        obs_gap = 2.0
-        obs_min_h = 0.7
-        _show_sp = payload.get("showSpecialMarkers", True)
-        _is_full_bar = _show_sp and bool(rec.get("is_full", False))
-        _is_noc_bar = _show_sp and bool(rec.get("is_no_controls_test", False))
-        obs_bar_fill = "#FF2F92" if _is_full_bar else "#ff8c00" if _is_noc_bar else _OBS_FILL
-        obs_bar_opacity = "1" if (_is_full_bar or _is_noc_bar) else ""
-        if obs_value_y < obs_base_y:
-            obs_bar_bottom = obs_base_y - obs_gap
-            obs_bar_y = min(obs_value_y, obs_bar_bottom - obs_min_h)
-            obs_bar_h = obs_bar_bottom - obs_bar_y
-        elif obs_value_y > obs_base_y:
-            obs_bar_y = obs_base_y + obs_gap
-            obs_bar_bottom = max(obs_value_y, obs_bar_y + obs_min_h)
-            obs_bar_h = obs_bar_bottom - obs_bar_y
-        else:
-            obs_bar_y = obs_base_y + obs_gap
-            obs_bar_h = obs_min_h
-        _obs_attrs: dict[str, Any] = {
-            "x": _fmt(x - x_step * 0.38),
-            "y": _fmt(obs_bar_y),
-            "width": max(1, x_step * 0.76),
-            "height": _fmt(obs_bar_h),
-            "style": f"--obs-fill: {obs_bar_fill}" + (f"; opacity: {obs_bar_opacity}" if obs_bar_opacity else ""),
-            "rx": "1.5",
-            "class": "obs-bar",
-            "data-obs-gap": _fmt(obs_gap),
-            "data-index": idx,
-        }
-        if _is_full_bar:
-            _obs_attrs["data-special"] = "full"
-        elif _is_noc_bar:
-            _obs_attrs["data-special"] = "nocontrol"
-        p.append(_tag("rect", _obs_attrs))
-
-        # Vertical guide line (broken around point)
-        gap_r = 7.0
-        pts = [
-            f"M {_fmt(x)} {_fmt(star_y)} L {_fmt(x)} {_fmt(star_y + star_h)}",
-            f"M {_fmt(x)} {_fmt(coef_y)} L {_fmt(x)} {_fmt(max(coef_y, cy(coef) - gap_r))}",
-            f"M {_fmt(x)} {_fmt(min(coef_y + coef_h, cy(coef) + gap_r))} L {_fmt(x)} {_fmt(coef_y + coef_h)}",
-            f"M {_fmt(x)} {_fmt(matrix_y)} L {_fmt(x)} {_fmt(matrix_y + matrix_h)}",
-            f"M {_fmt(x)} {_fmt(obs_y)} L {_fmt(x)} {_fmt(obs_y + obs_h)}",
-        ]
-        p.append(
-            _tag("path", {"d": " ".join(pts), "class": "guide", "data-index": idx})
-        )
-
-        # Invisible wide hit region for hover
-        p.append(
-            _tag(
-                "rect",
-                {
-                    "x": _fmt(x - x_step / 2),
-                    "y": _fmt(star_y),
-                    "width": max(3, x_step),
-                    "height": _fmt(obs_y + obs_h - star_y),
-                    "fill": "transparent",
-                    "class": "hoverable",
-                    "data-index": idx,
-                    "onmouseenter": f"activate({idx})",
-                    "onmouseleave": "clearActive()",
-                    "onclick": f"togglePin({idx},event)",
-                },
-            )
-        )
-
-    # ── PNG-style special vertical markers ────────────────
-    if payload.get("showSpecialMarkers", True):
-        for kind, css_name in [
-            ("is_no_controls_test", "special-nocontrol"),
-            ("is_full", "special-full"),
-        ]:
-            for idx, rec in enumerate(records):
-                fallback_no_controls = not rec.get("included_matrix_controls", [])
-                default_marker = fallback_no_controls if kind == "is_no_controls_test" else False
-                if not bool(rec.get(kind, default_marker)):
-                    continue
-                x = xc(idx)
-                coef_y_at_x = cy(float(rec["coef"]))
-                gap_r = 4.8
-                pts = [
-                    f"M {_fmt(x)} {_fmt(star_y)} L {_fmt(x)} {_fmt(star_y + star_h)}",
-                    f"M {_fmt(x)} {_fmt(coef_y)} L {_fmt(x)} {_fmt(max(coef_y, coef_y_at_x - gap_r))}",
-                    f"M {_fmt(x)} {_fmt(min(coef_y + coef_h, coef_y_at_x + gap_r))} L {_fmt(x)} {_fmt(coef_y + coef_h)}",
-                    f"M {_fmt(x)} {_fmt(matrix_y)} L {_fmt(x)} {_fmt(matrix_y + matrix_h)}",
-                    f"M {_fmt(x)} {_fmt(obs_y)} L {_fmt(x)} {_fmt(obs_y + obs_h)}",
-                ]
-                p.append(
-                    _tag(
-                        "path",
-                        {
-                            "d": " ".join(pts),
-                            "class": f"special-line {css_name}",
-                            "data-special-index": idx,
-                        },
-                    )
-                )
-
-    p.append(
-        _tag(
-            "circle",
-            {
-                "id": "active-ring",
-                "class": "active-ring",
-                "cx": "0",
-                "cy": "0",
-                "r": "6",
-            },
-        )
-    )
-    p.append("</g></g>")
-
-    p.append("</svg>")
-    return "\n  ".join(p), width, height
-
-
 # ── Canvas HTML builder ───────────────────────────────────────────────────────
 
 
 def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     """Generate a self-contained Canvas-based interactive HTML.
 
-    Key differences from _build_html / _build_svg:
     - Data is zlib-compressed + base64-encoded (reduces payload size ~70%).
     - Rendering uses two stacked <canvas> elements: cv-main (static) and
       cv-ov (overlay for hover/pin highlights).
@@ -2763,6 +596,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     n = len(records)
     n_controls = len(controls)
     compact_threshold = 1024
+    compact_base_n = 8192
     compact_enabled = n > compact_threshold
     initial_mode = "compact" if compact_enabled else "detail"
     body_attrs = ' class="mode-compact"' if compact_enabled else ""
@@ -2834,7 +668,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
             alt_group_color_by_control[str(controls[row])] = fill
 
     # Three-star starred controls (yellow highlight)
-    from . import py as _rm_py  # already imported at module level, reuse below
+    from ..engine import py as _rm_py  # already imported at module level, reuse below
     controls_test_names_set = set(_payload_controls_test_names(payload))
     three_star_records = [r for r in records if int(r.get("star", 0)) == 3]
     starred_controls: set[str] = {
@@ -3075,7 +909,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       box-shadow: none;
     }}
     body.mode-compact .info-panel {{ display: none; }}
-    body.mode-compact #sb-track {{ display: none; }}
     body.mode-compact #cv-wrap {{ cursor: default; }}
     body.mode-compact #cv-ov {{ pointer-events: none; }}
     .rm-chip {{
@@ -3348,7 +1181,10 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const records = DATA.records;
   const N = records.length;
   const COMPACT_THRESHOLD = {compact_threshold};
+  const COMPACT_BASE_N = {compact_base_n};
   const COMPACT_ENABLED = {compact_enabled_js};
+  const MAX_COMPACT_BITMAP_DIM = 32760;
+  const MAX_COMPACT_BITMAP_AREA = 80000000;
 
   /* ── Constants (must match Python geometry) ─────────────── */
   const LEFT        = {left};
@@ -3447,7 +1283,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     leftSb.style.width  = LEFT + 'px';
   }}
 
-  const ro = new ResizeObserver(() => {{ resizeCanvas(); requestRender(); updateScrollbar(); }});
+  const ro = new ResizeObserver(() => {{
+    invalidateCompactBitmap();
+    resizeCanvas();
+    requestRender();
+    updateScrollbar();
+  }});
   ro.observe(chartVScroll);
   resizeCanvas();
 
@@ -3503,7 +1344,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const VIRT_BUF = 1500;
 
   function visibleRange() {{
-    if (state.mode === 'compact') return [0, N - 1];
     const vpW = chartVScroll.clientWidth - LEFT;
     const sc  = state.scrollX;
     const step = xStep();
@@ -3519,7 +1359,17 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   function xStep() {{
     if (state.mode !== 'compact' || N <= 0) return X_STEP;
-    return Math.min(X_STEP, plotViewportW() / Math.max(N, 1));
+    const compactBase = Math.min(N, COMPACT_BASE_N);
+    return Math.max(0.02, Math.min(X_STEP, plotViewportW() / Math.max(compactBase, 1)));
+  }}
+
+  function maxScrollX() {{
+    const vpW = chartVScroll.clientWidth - LEFT;
+    return Math.max(0, N * xStep() - vpW);
+  }}
+
+  function clampScrollX() {{
+    state.scrollX = Math.max(0, Math.min(maxScrollX(), state.scrollX));
   }}
 
   function colX(col) {{
@@ -3534,8 +1384,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   /* ── Panel frames & grid (static background, full width) ── */
-  function drawBackground(ctx) {{
-    const vpW = chartVScroll.clientWidth;
+  function drawBackground(ctx, viewportW = chartVScroll.clientWidth) {{
+    const vpW = viewportW;
     const plotW = Math.max(0, vpW - LEFT - RIGHT);
     const rxR = vpW - RIGHT; // right edge of clip region (screen coords)
     // COEF grid lines (5 levels) — use screen coords to avoid 40k-px paths
@@ -3617,12 +1467,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const x = colX(col) - state.scrollX;
       ctx.strokeStyle = isFull ? SPECIAL_FULL : SPECIAL_NOTEST;
       ctx.setLineDash([3, 2]);
-      const coefAt = cy(rec.coef);
-      const gapR = 4.8;
       ctx.beginPath();
       ctx.moveTo(x, STAR_Y); ctx.lineTo(x, STAR_Y + STAR_H);
-      ctx.moveTo(x, COEF_Y); ctx.lineTo(x, Math.max(COEF_Y, coefAt - gapR));
-      ctx.moveTo(x, Math.min(COEF_Y + COEF_H, coefAt + gapR)); ctx.lineTo(x, COEF_Y + COEF_H);
+      if (state.mode === 'compact') {{
+        ctx.moveTo(x, COEF_Y); ctx.lineTo(x, COEF_Y + COEF_H);
+      }} else {{
+        const coefAt = cy(rec.coef);
+        const gapR = 4.8;
+        ctx.moveTo(x, COEF_Y); ctx.lineTo(x, Math.max(COEF_Y, coefAt - gapR));
+        ctx.moveTo(x, Math.min(COEF_Y + COEF_H, coefAt + gapR)); ctx.lineTo(x, COEF_Y + COEF_H);
+      }}
       ctx.moveTo(x, MATRIX_Y); ctx.lineTo(x, MATRIX_Y + MATRIX_H);
       ctx.moveTo(x, OBS_Y); ctx.lineTo(x, OBS_Y + OBS_H);
       ctx.stroke();
@@ -3667,7 +1521,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const isFull   = state.showFull   && rec.is_full;
       const isNotest = state.showNotest && rec.is_no_controls_test;
       const baseFill = rec.coef >= 0 ? STAR_POS : STAR_NEG;
-      const fill = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : baseFill;
+      const fill = compact ? baseFill : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : baseFill);
       ctx.globalAlpha = dimmed ? 0.13 : 1.0;
       const dirn = rec.coef < 0 ? -1 : 1;
       const bh = compact ? Math.max(1.1, Math.min(3, STAR_H / 20)) : 7;
@@ -3748,11 +1602,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   /* ── Coef points & zero line ────────────────────────────── */
-  function drawCoef(ctx, fc, lc) {{
+  function drawCoef(ctx, fc, lc, viewportW = chartVScroll.clientWidth) {{
     // zero line — use screen coords to avoid anti-aliasing bleed at clip boundary
     const zy = cy(0);
     if (zy >= COEF_Y && zy <= COEF_Y + COEF_H) {{
-      const rxR = chartVScroll.clientWidth - RIGHT;
+      const rxR = viewportW - RIGHT;
       ctx.strokeStyle = '#EF4444';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]);
@@ -3802,7 +1656,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
           const v = Math.round(200 - 200 * t);
           normalFill = `rgb(${{v}},${{v}},${{v}})`;
         }}
-        ctx.fillStyle = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill);
+        ctx.fillStyle = compact ? (groupFill || normalFill) : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill));
         const rw = compact ? Math.min(2.0, step * 0.55) : Math.max(1, step * 0.80);
         const rx = compact
           ? colX(col) - state.scrollX - rw / 2
@@ -3825,11 +1679,13 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     for (let col = fc; col <= lc; col++) {{
       const rec = records[sortedOrder[col]];
       const dimmed = isDimmed(rec);
-      ctx.globalAlpha = dimmed ? 0.13 : 0.78;
+      const step = xStep();
+      const compact = state.mode === 'compact';
       const isFull   = state.showFull   && rec.is_full;
       const isNotest = state.showNotest && rec.is_no_controls_test;
-      ctx.fillStyle = isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : OBS_FILL;
-      if (isFull || isNotest) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+      ctx.globalAlpha = dimmed ? 0.13 : 0.78;
+      ctx.fillStyle = compact ? OBS_FILL : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : OBS_FILL);
+      if (!compact && (isFull || isNotest)) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
       const vy = obsY(rec.obs);
       let barY, barH;
       if (vy < baseline) {{
@@ -3844,8 +1700,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         barY = baseline + obsGap;
         barH = obsMinH;
       }}
-      const step = xStep();
-      const compact = state.mode === 'compact';
       const bx = colLeft(col) - state.scrollX + (compact ? 0 : step * 0.12);
       const bw = compact ? Math.max(0.5, step) : Math.max(1, step * 0.76);
       ctx.beginPath();
@@ -3864,11 +1718,120 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   /* ── Main render ────────────────────────────────────────── */
   let _raf = 0;
+  let compactBitmapCanvas = null;
+  let compactBitmapKey = "";
+
+  function compactBitmapStateKey() {{
+    const dpr = window.devicePixelRatio || 1;
+    const sig = [...state.sigFilter].sort((a, b) => a - b).join('');
+    const ci = [90, 95, 99].filter(k => state.showCI[k]).join('');
+    return [
+      chartVScroll.clientWidth,
+      TOTAL_H,
+      dpr,
+      N,
+      xStep().toFixed(8),
+      state.sort,
+      sig,
+      ci,
+      state.showFull ? 'F1' : 'F0',
+      state.showNotest ? 'N1' : 'N0',
+    ].join('|');
+  }}
+
+  function invalidateCompactBitmap() {{
+    compactBitmapCanvas = null;
+    compactBitmapKey = "";
+  }}
+
+  function compactBitmapCssWidth() {{
+    return Math.max(1, Math.ceil(LEFT + N * xStep() + RIGHT));
+  }}
+
+  function canUseCompactBitmap() {{
+    if (state.mode !== 'compact' || N <= 0) return false;
+    const dpr = window.devicePixelRatio || 1;
+    const w = compactBitmapCssWidth();
+    const h = Math.max(1, Math.ceil(TOTAL_H));
+    return (
+      w * dpr <= MAX_COMPACT_BITMAP_DIM
+      && h * dpr <= MAX_COMPACT_BITMAP_DIM
+      && w * h * dpr * dpr <= MAX_COMPACT_BITMAP_AREA
+    );
+  }}
+
+  function ensureCompactBitmap() {{
+    if (!canUseCompactBitmap()) return null;
+    const key = compactBitmapStateKey();
+    if (compactBitmapCanvas && compactBitmapKey === key) return compactBitmapCanvas;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = compactBitmapCssWidth();
+    const cssPlotW = Math.max(0, cssW - LEFT - RIGHT);
+    const bmp = document.createElement('canvas');
+    bmp.width = Math.ceil(cssW * dpr);
+    bmp.height = Math.ceil(TOTAL_H * dpr);
+    const bmpCtx = bmp.getContext('2d');
+    bmpCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bmpCtx.clearRect(0, 0, cssW, TOTAL_H);
+
+    const oldScrollX = state.scrollX;
+    state.scrollX = 0;
+    bmpCtx.save();
+    try {{
+      bmpCtx.beginPath();
+      bmpCtx.rect(LEFT, 0, cssPlotW, TOTAL_H);
+      bmpCtx.clip();
+      drawBackground(bmpCtx, cssW);
+      drawCIBands(bmpCtx, 0, N - 1);
+      drawStars(bmpCtx, 0, N - 1);
+      drawCoef(bmpCtx, 0, N - 1, cssW);
+      drawMatrix(bmpCtx, 0, N - 1);
+      drawObs(bmpCtx, 0, N - 1);
+      drawGuides(bmpCtx, 0, N - 1);
+    }} finally {{
+      bmpCtx.restore();
+      state.scrollX = oldScrollX;
+    }}
+    compactBitmapCanvas = bmp;
+    compactBitmapKey = key;
+    return compactBitmapCanvas;
+  }}
+
+  function renderCompactBitmap() {{
+    const bmp = ensureCompactBitmap();
+    if (!bmp) return false;
+    mainCtx.clearRect(0, 0, cvMain.width, cvMain.height);
+    const dpr = window.devicePixelRatio || 1;
+    const visibleW = Math.max(0, chartVScroll.clientWidth - LEFT - RIGHT);
+    const sourceX = LEFT + state.scrollX;
+    const availableW = Math.max(0, compactBitmapCssWidth() - RIGHT - sourceX);
+    const sw = Math.min(visibleW, availableW);
+    if (sw > 0) {{
+      mainCtx.drawImage(
+        bmp,
+        sourceX * dpr,
+        0,
+        sw * dpr,
+        TOTAL_H * dpr,
+        LEFT,
+        0,
+        sw,
+        TOTAL_H
+      );
+    }}
+    drawSidebarMask(mainCtx);
+    drawPanelFrames(mainCtx);
+    drawPanelLabels(mainCtx);
+    return true;
+  }}
+
   function requestRender() {{
     if (!_raf) _raf = requestAnimationFrame(() => {{ _raf = 0; render(); }});
   }}
 
   function render() {{
+    if (state.mode === 'compact' && renderCompactBitmap()) return;
     mainCtx.clearRect(0, 0, cvMain.width, cvMain.height);
     const [fc, lc] = visibleRange();
     // Clip to chart area to avoid bleeding into left/right margins during scroll
@@ -3877,12 +1840,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     mainCtx.rect(LEFT, 0, chartVScroll.clientWidth - LEFT - RIGHT, TOTAL_H);
     mainCtx.clip();
     drawBackground(mainCtx);
-    drawGuides(mainCtx, fc, lc);
     drawCIBands(mainCtx, fc, lc);
     drawStars(mainCtx, fc, lc);
     drawCoef(mainCtx, fc, lc);
     drawMatrix(mainCtx, fc, lc);
     drawObs(mainCtx, fc, lc);
+    drawGuides(mainCtx, fc, lc);
     mainCtx.restore();
     // These three are unclipped — drawn over the full canvas
     drawSidebarMask(mainCtx);
@@ -4178,7 +2141,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const dir = e.key === 'ArrowRight' ? 1 : -1;
       const cur = activeCol >= 0 ? activeCol : (dir > 0 ? -1 : N);
       const next = Math.max(0, Math.min(N - 1, cur + dir));
-      pinnedIdx = sortedOrder[next];
       activate(next, true);
       // scroll if needed
       const x = colX(next);
@@ -4188,7 +2150,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         requestRender();
         updateScrollbar();
       }} else if (x - state.scrollX > vpW - 20) {{
-        const maxSc = Math.max(0, N * xStep() - vpW);
+        const maxSc = maxScrollX();
         state.scrollX = Math.min(maxSc, x - vpW + 20);
         requestRender();
         updateScrollbar();
@@ -4199,25 +2161,28 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   /* ── Wheel scroll ───────────────────────────────────────── */
   cvOv.addEventListener('wheel', e => {{
     const isHorizontal = Math.abs(e.deltaX) >= Math.abs(e.deltaY);
-    if (state.mode === 'compact') return;
     if (isHorizontal) {{
       e.preventDefault();
-      const vpW = chartVScroll.clientWidth - LEFT;
-      const maxSc = Math.max(0, N * xStep() - vpW);
-      state.scrollX = Math.max(0, Math.min(maxSc, state.scrollX + e.deltaX));
+      state.scrollX = Math.max(0, Math.min(maxScrollX(), state.scrollX + e.deltaX));
       requestRender();
       updateScrollbar();
       if (activeCol >= 0 && pinnedIdx >= 0) drawOverlay(activeCol);
     }}
     // vertical: don't preventDefault — let it bubble to #chart-vscroll for native scroll
   }}, {{ passive: false }});
+  cvWrap.addEventListener('wheel', e => {{
+    if (state.mode !== 'compact') return;
+    const isHorizontal = Math.abs(e.deltaX) >= Math.abs(e.deltaY);
+    if (!isHorizontal) return;
+    e.preventDefault();
+    state.scrollX = Math.max(0, Math.min(maxScrollX(), state.scrollX + e.deltaX));
+    requestRender();
+    updateScrollbar();
+  }}, {{ passive: false }});
 
   /* ── Scrollbar ──────────────────────────────────────────── */
   function updateScrollbar() {{
-    if (state.mode === 'compact') {{
-      sbThumb.style.display = 'none';
-      return;
-    }}
+    clampScrollX();
     const trackW = sbTrack.clientWidth;
     const vpW = chartVScroll.clientWidth - LEFT;
     const totalW = N * xStep();
@@ -4245,7 +2210,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const trackW = sbTrack.clientWidth;
     const vpW = chartVScroll.clientWidth - LEFT;
     const totalW = N * xStep();
-    const maxSc = Math.max(0, totalW - vpW);
+    const maxSc = maxScrollX();
     const thumbW = Math.max(20, trackW * (vpW / totalW));
     const dx = e.clientX - sbDrag.startX;
     const sc = sbDrag.startSc + dx * (maxSc / (trackW - thumbW));
@@ -4258,9 +2223,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (e.target === sbThumb) return;
     const rect = sbTrack.getBoundingClientRect();
     const trackW = sbTrack.clientWidth;
-    const vpW = chartVScroll.clientWidth - LEFT;
     const totalW = N * xStep();
-    const maxSc = Math.max(0, totalW - vpW);
+    const maxSc = maxScrollX();
     const frac = (e.clientX - rect.left) / trackW;
     state.scrollX = Math.max(0, Math.min(maxSc, frac * totalW));
     requestRender();
@@ -4283,6 +2247,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     state.sort = btn.dataset.v || 'signed_p';
     reSort();
     computeRunColors();
+    invalidateCompactBitmap();
     syncSortButtons();
     pinnedIdx = -1;
     activeCol = -1;
@@ -4311,6 +2276,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (btn.dataset.v === 'compact' && !COMPACT_ENABLED) return;
     state.mode = btn.dataset.v || 'detail';
     state.scrollX = 0;
+    invalidateCompactBitmap();
     pinnedIdx = -1;
     activeCol = -1;
     activeIdx = -1;
@@ -4333,6 +2299,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         state.sigFilter.add(star);
       }}
       chip.classList.toggle('on', state.sigFilter.has(star));
+      invalidateCompactBitmap();
       requestRender();
     }});
   }});
@@ -4344,6 +2311,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const enabled = !chip.classList.contains('on');
       chip.classList.toggle('on', enabled);
       state.showCI[ci] = enabled;
+      invalidateCompactBitmap();
       requestRender();
     }});
   }});
@@ -4356,6 +2324,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       chip.classList.toggle('on', enabled);
       if (kind === 'full') state.showFull = enabled;
       else state.showNotest = enabled;
+      invalidateCompactBitmap();
       requestRender();
     }});
   }});

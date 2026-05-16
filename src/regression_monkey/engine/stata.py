@@ -19,7 +19,7 @@ from typing import Any, Callable, cast
 
 import pandas as pd
 
-from . import common as rm_common
+from .. import common as rm_common
 from . import py as rm
 
 
@@ -145,12 +145,6 @@ def _spec_fe_labels(spec_def: dict[str, Any], var_map: dict[str, str]) -> list[s
     return labels
 
 
-def _safe_path_part(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    cleaned = "_".join(part for part in cleaned.split("_") if part)
-    return cleaned or "spec"
-
-
 def _dynamic_group_var_name(grouping_variable: str) -> str:
     return f"b_{grouping_variable}"
 
@@ -170,7 +164,7 @@ def _grouping_display_name(grouping_variable: str, grouping_scope: str) -> str:
 
 
 def _grouping_path_part(grouping_variable: str, grouping_scope: str) -> str:
-    return f"{_safe_path_part(grouping_variable)}_{_grouping_scope_suffix(grouping_scope)}"
+    return f"{rm_common._safe_path_part(grouping_variable)}_{_grouping_scope_suffix(grouping_scope)}"
 
 
 def _grouping_quantiles_line(grouping_variable: str, grouping_scope: str, var_map: dict[str, str]) -> list[str]:
@@ -188,13 +182,6 @@ def _grouping_quantiles_line(grouping_variable: str, grouping_scope: str, var_ma
             f"    quantiles {grouping_variable}, gen(_temp) n(2) stable",
         ]
     raise ValueError(f"unknown grouping scope: {grouping_scope}")
-
-
-def _control_spec_count(
-    controls_must_slots: list[rm.ControlSlot],
-    controls_test_slots: list[rm.ControlSlot],
-) -> int:
-    return rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
 
 
 def _append_control_stats_lines(lines: list[str], chosen_controls: list[str], *, indent: str = "    ") -> None:
@@ -220,18 +207,6 @@ def _append_control_stats_lines(lines: list[str], chosen_controls: list[str], *,
         f'{indent}    }}',
         f'{indent}}}',
     ])
-
-
-def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
-    output_dir = run_output_dir / _safe_path_part(group_name)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / filename
-
-
-def _render_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str, export_format: str) -> pathlib.Path:
-    if export_format == "html":
-        return run_output_dir / filename
-    return _plot_output_path(run_output_dir, group_name, filename)
 
 
 def _write_reghdfe_do(
@@ -445,7 +420,7 @@ def _run_stata_do(
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-        log_tail = _tail_text(log_path)
+        log_tail = rm_common._tail_text(log_path)
         raise KeyboardInterrupt(
             "Stata batch run was interrupted.\n"
             f"Do file: {do_path.resolve()}\n"
@@ -454,7 +429,7 @@ def _run_stata_do(
             f"{log_tail}"
         ) from exc
     if returncode != 0:
-        log_tail = _tail_text(log_path)
+        log_tail = rm_common._tail_text(log_path)
         raise RuntimeError(
             f"Stata exited with status {returncode}.\n"
             f"Do file: {do_path.resolve()}\n"
@@ -464,12 +439,6 @@ def _run_stata_do(
         )
 
 
-def _tail_text(path: pathlib.Path, max_lines: int = 80) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except FileNotFoundError:
-        return "(log file not found)"
-    return "\n".join(lines[-max_lines:])
 
 
 def _ensure_stata_result_exists(
@@ -480,7 +449,7 @@ def _ensure_stata_result_exists(
 ) -> None:
     if results_dta.exists():
         return
-    log_tail = _tail_text(log_path)
+    log_tail = rm_common._tail_text(log_path)
     raise RuntimeError(
         "Stata did not create the expected result file.\n"
         f"Expected result: {results_dta.resolve()}\n"
@@ -498,7 +467,7 @@ def _raise_empty_stata_records(
     do_path: pathlib.Path,
     log_path: pathlib.Path,
 ) -> None:
-    log_tail = _tail_text(log_path)
+    log_tail = rm_common._tail_text(log_path)
     raise RuntimeError(
         "Stata returned no valid regression results.\n"
         f"Spec: {spec_display}\n"
@@ -676,7 +645,7 @@ def run_stata_engine(
             dta_result_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_stata_results.dta"
             results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_results.csv"
             title_suffix = spec_def["help"].format(**fmt)
-            base_regression_count = _control_spec_count(controls_must_slots, controls_test_slots)
+            base_regression_count = rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
 
             print(f"[Stata] 运行规格：{spec_display}")
             if grouping_variables:
@@ -744,7 +713,7 @@ def run_stata_engine(
                     interaction_dta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_interaction_stata_results.dta"
                     grouped_results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_results.csv"
                     grouped_meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}_plot_meta.json"
-                    grouped_output_path = _render_output_path(
+                    grouped_output_path = rm_common._render_output_path(
                         run_output_dir,
                         str(spec_def["tag"]),
                         f"{y_var}_{x_var}_{spec_def['tag']}_{grouping_path_part}.png",
@@ -890,7 +859,7 @@ def run_stata_engine(
                         rm_common.safe_unlink(interaction_dta_path)
             else:
                 meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_plot_meta.json"
-                output_path = _render_output_path(
+                output_path = rm_common._render_output_path(
                     run_output_dir,
                     str(spec_def["tag"]),
                     f"{y_var}_{x_var}_{spec_def['tag']}.png",

@@ -16,9 +16,10 @@ import sys
 from time import perf_counter
 from typing import Any, Callable, cast
 
+import numpy as np
 import pandas as pd
 
-from . import common as rm_common
+from .. import common as rm_common
 from . import py as rm
 
 
@@ -106,27 +107,6 @@ def _spec_r_fe_terms(spec_def: dict[str, Any], var_map: dict[str, str]) -> list[
     return terms
 
 
-def _safe_path_part(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    cleaned = "_".join(part for part in cleaned.split("_") if part)
-    return cleaned or "spec"
-
-
-def _render_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str, export_format: str) -> pathlib.Path:
-    if export_format == "html":
-        return run_output_dir / filename
-    output_dir = run_output_dir / _safe_path_part(group_name)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / filename
-
-
-def _control_spec_count(
-    controls_must_slots: list[rm.ControlSlot],
-    controls_test_slots: list[rm.ControlSlot],
-) -> int:
-    return rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
-
-
 def _write_r_specs_csv(
     path: pathlib.Path,
     *,
@@ -144,10 +124,93 @@ def _write_r_specs_csv(
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8")
 
 
+def _required_cols_for_run(
+    df: pd.DataFrame,
+    args: argparse.Namespace,
+    controls_must_flat: list[str],
+    controls_test_flat: list[str],
+    var_map: dict[str, str],
+    spec_flags: dict[str, bool],
+) -> tuple[list[str], set[str]]:
+    cols_numeric: set[str] = set()
+    for y in args.y:
+        cols_numeric.add(y)
+    for x in args.x:
+        cols_numeric.add(x)
+    cols_numeric.update(controls_must_flat)
+    cols_numeric.update(controls_test_flat)
+
+    cols_group: set[str] = set()
+    for spec_def in rm._SPEC_CATALOG:
+        if not spec_flags.get(spec_def["name"], False):
+            continue
+        if spec_def["needs_region"] and args.region_fe is None:
+            continue
+        for k in spec_def["cl_keys"]:
+            cols_group.add(var_map[k])
+        for term in _spec_r_fe_terms(spec_def, var_map):
+            for part in term.split("^"):
+                if part:
+                    cols_group.add(part)
+
+    all_cols = sorted((cols_numeric | cols_group) & set(df.columns))
+    factor_cols = (cols_group - cols_numeric) & set(all_cols)
+    return all_cols, factor_cols
+
+
+def _probe_r_packages(rscript_path: str) -> dict[str, bool]:
+    script = (
+        "cat(as.integer(requireNamespace('arrow', quietly=TRUE)),"
+        "as.integer(requireNamespace('data.table', quietly=TRUE)),sep=',')"
+    )
+    try:
+        proc = subprocess.run(
+            [rscript_path, "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {"arrow": False, "data.table": False}
+    parts = (proc.stdout or "").strip().split(",")
+    if len(parts) != 2:
+        return {"arrow": False, "data.table": False}
+    return {"arrow": parts[0] == "1", "data.table": parts[1] == "1"}
+
+
+def _write_input_dataset(
+    df: pd.DataFrame,
+    path: pathlib.Path,
+    factor_cols: set[str],
+    *,
+    use_feather: bool,
+) -> None:
+    if use_feather:
+        import pyarrow as pa
+        import pyarrow.feather as pa_feather
+
+        arrays: dict[str, Any] = {}
+        for col in df.columns:
+            s = df[col]
+            if col in factor_cols:
+                codes_arr, _uniques = pd.factorize(s, use_na_sentinel=True)
+                mask = codes_arr == -1
+                codes_safe = np.where(mask, 0, codes_arr).astype(np.int32)
+                arrays[col] = pa.array(codes_safe, mask=mask, type=pa.int32())
+            else:
+                arrays[col] = pa.array(s)
+        table = pa.Table.from_pydict(arrays)
+        pa_feather.write_feather(table, str(path))
+    else:
+        df.to_csv(path, index=False, encoding="utf-8")
+
+
 def _write_fixest_script(
     *,
     script_path: pathlib.Path,
-    data_csv: pathlib.Path,
+    data_path: pathlib.Path,
+    data_format: str,
     specs_csv: pathlib.Path,
     results_path: pathlib.Path,
     y: str,
@@ -159,11 +222,14 @@ def _write_fixest_script(
     drop_singletons_option: bool = False,
 ) -> None:
     se_kind = "robust" if robust else "cluster"
-    lines = [
+    lines: list[str] = [
         "options(warn = 1)",
         "if (!requireNamespace('fixest', quietly = TRUE)) {",
         "  stop('R package fixest is not installed. Install it with install.packages(\"fixest\").')",
         "}",
+        "has_arrow <- requireNamespace('arrow', quietly = TRUE)",
+        "has_dt <- requireNamespace('data.table', quietly = TRUE)",
+        f"data_format <- {_r_string(data_format)}",
         "qvar <- function(x) paste0('`', gsub('`', '``', x, fixed = TRUE), '`')",
         "json_escape <- function(x) {",
         "  x <- gsub('\\\\\\\\', '\\\\\\\\\\\\\\\\', x)",
@@ -271,6 +337,13 @@ def _write_fixest_script(
         "    check.names = FALSE",
         "  )",
         "}",
+        "read_dataset <- function(path) {",
+        "  if (data_format == 'feather' && has_arrow) {",
+        "    return(as.data.frame(arrow::read_feather(path)))",
+        "  }",
+        "  if (has_dt) return(as.data.frame(data.table::fread(path, check.names = FALSE)))",
+        "  read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)",
+        "}",
         "make_interaction <- function(parts, data) {",
         "  vals <- lapply(parts, function(nm) data[[nm]])",
         "  do.call(interaction, c(vals, list(drop = TRUE, sep = '^')))",
@@ -282,6 +355,27 @@ def _write_fixest_script(
         "  })",
         "}",
         "fe_base_vars <- function(fe_terms) unique(unlist(strsplit(fe_terms, '^', fixed = TRUE), use.names = FALSE))",
+        "mask_key <- function(m) {",
+        "  if (anyNA(m)) m[is.na(m)] <- FALSE",
+        "  pad <- (-length(m)) %% 8L",
+        "  bits <- if (pad > 0L) c(m, rep(FALSE, pad)) else m",
+        "  vals <- as.integer(packBits(bits))",
+        "  idx <- seq_along(vals)",
+        "  h1 <- sum((vals + 1) * ((idx %% 1009) + 1)) %% 2147483647",
+        "  h2 <- sum((vals + 3) * ((idx %% 9176) + 7)) %% 2147483629",
+        "  h3 <- sum((vals + 5) * ((idx %% 65521) + 11)) %% 2147483587",
+        "  paste0('k_', length(m), '_', sum(m), '_', as.integer(h1), '_', as.integer(h2), '_', as.integer(h3))",
+        "}",
+        "new_cache <- function() {",
+        "  new.env(hash = TRUE, parent = emptyenv())",
+        "}",
+        "cache_get <- function(cache, key) {",
+        "  cache[[key]]",
+        "}",
+        "cache_set <- function(cache, key, value) {",
+        "  cache[[key]] <- value",
+        "  invisible(value)",
+        "}",
         *([
             "drop_singletons <- function(mask, fe_list) {",
             "  if (!length(fe_list)) return(mask)",
@@ -301,11 +395,10 @@ def _write_fixest_script(
             "  }",
             "}",
         ] if drop_singletons_option else []),
-        "connected_components_n <- function(fe_list) {",
-        "  if (!length(fe_list)) return(0L)",
-        "  codes <- lapply(fe_list, function(v) as.integer(factor(v)))",
-        "  nlev <- vapply(codes, max, integer(1))",
-        "  if (length(codes) == 1L) return(1L)",
+        "connected_components_from_codes <- function(fe_codes) {",
+        "  if (!length(fe_codes)) return(0L)",
+        "  if (length(fe_codes) == 1L) return(1L)",
+        "  nlev <- vapply(fe_codes, function(c) c$nlev, integer(1))",
         "  offsets <- c(0L, cumsum(nlev)[-length(nlev)])",
         "  total <- sum(nlev)",
         "  parent <- seq_len(total)",
@@ -316,38 +409,36 @@ def _write_fixest_script(
         "    }",
         "    x",
         "  }",
-        "  union <- function(a, b) {",
+        "  union_op <- function(a, b) {",
         "    ra <- find(a); rb <- find(b)",
         "    if (ra != rb) parent[[rb]] <<- ra",
         "  }",
-        "  n <- length(codes[[1]])",
+        "  n <- length(fe_codes[[1]]$codes)",
         "  for (i in seq_len(n)) {",
-        "    root <- offsets[[1]] + codes[[1]][[i]]",
-        "    for (j in 2:length(codes)) union(root, offsets[[j]] + codes[[j]][[i]])",
+        "    root <- offsets[[1]] + fe_codes[[1]]$codes[[i]]",
+        "    for (j in 2:length(fe_codes)) union_op(root, offsets[[j]] + fe_codes[[j]]$codes[[i]])",
         "  }",
         "  length(unique(vapply(seq_len(total), find, integer(1))))",
         "}",
-        "k_fe_count <- function(fe_list) {",
-        "  if (!length(fe_list)) return(0L)",
-        "  groups <- lapply(fe_list, function(v) as.integer(factor(v)))",
-        "  n_levels <- vapply(groups, function(g) max(g), integer(1))",
-        "  sum(n_levels) - connected_components_n(fe_list)",
+        "k_fe_count_from_codes <- function(fe_codes) {",
+        "  if (!length(fe_codes)) return(0L)",
+        "  sum(vapply(fe_codes, function(c) c$nlev, integer(1))) - connected_components_from_codes(fe_codes)",
         "}",
-        "is_nested_in_cluster <- function(fe, clusters) {",
-        "  if (!length(clusters)) return(FALSE)",
-        "  fe_codes <- factor(fe)",
-        "  for (cl in clusters) {",
-        "    combo <- interaction(fe_codes, factor(cl), drop = TRUE)",
-        "    if (nlevels(combo) == nlevels(fe_codes)) return(TRUE)",
+        "is_nested_in_cluster_codes <- function(fe_one, cluster_factors) {",
+        "  if (!length(cluster_factors)) return(FALSE)",
+        "  fe_factor <- factor(fe_one$codes)",
+        "  for (cl in cluster_factors) {",
+        "    combo <- interaction(fe_factor, cl, drop = TRUE)",
+        "    if (nlevels(combo) == fe_one$nlev) return(TRUE)",
         "  }",
         "  FALSE",
         "}",
-        "k_fe_nonnested <- function(fe_list, clusters, se_kind) {",
-        "  if (se_kind == 'robust' || !length(clusters)) return(k_fe_count(fe_list))",
-        "  keep <- vapply(fe_list, function(fe) !is_nested_in_cluster(fe, clusters), logical(1))",
-        "  kept <- fe_list[keep]",
+        "k_fe_nonnested_from_codes <- function(fe_codes, cluster_factors, se_kind) {",
+        "  if (se_kind == 'robust' || !length(cluster_factors)) return(k_fe_count_from_codes(fe_codes))",
+        "  keep <- vapply(fe_codes, function(c) !is_nested_in_cluster_codes(c, cluster_factors), logical(1))",
+        "  kept <- fe_codes[keep]",
         "  if (!length(kept)) return(0L)",
-        "  sum(vapply(kept, function(fe) nlevels(factor(fe)), integer(1)))",
+        "  sum(vapply(kept, function(c) c$nlev, integer(1)))",
         "}",
         "meat_cluster <- function(Xe, cl) {",
         "  sums <- rowsum(Xe, group = cl, reorder = FALSE)",
@@ -361,20 +452,24 @@ def _write_fixest_script(
         "  if (se_kind == 'robust') {",
         "    V <- XtX_inv %*% ((N / (N - k_total)) * crossprod(Xe)) %*% XtX_inv",
         "  } else if (length(clusters) == 1L) {",
-        "    cl1 <- factor(clusters[[1]])",
+        "    cl1 <- if (is.factor(clusters[[1]])) clusters[[1]] else factor(clusters[[1]])",
         "    G <- nlevels(cl1)",
         "    if (G <= 1L) return(NULL)",
         "    ssc <- G / (G - 1) * (N - 1) / (N - k_total)",
         "    V <- XtX_inv %*% (ssc * meat_cluster(Xe, cl1)) %*% XtX_inv",
         "  } else if (length(clusters) == 2L) {",
-        "    cl1 <- factor(clusters[[1]])",
-        "    cl2 <- factor(clusters[[2]])",
+        "    cl1 <- if (is.factor(clusters[[1]])) clusters[[1]] else factor(clusters[[1]])",
+        "    cl2 <- if (is.factor(clusters[[2]])) clusters[[2]] else factor(clusters[[2]])",
         "    cl12 <- interaction(cl1, cl2, drop = TRUE)",
-        "    Gmin <- min(nlevels(cl1), nlevels(cl2), nlevels(cl12))",
-        "    if (Gmin <= 1L) return(NULL)",
-        "    ssc <- Gmin / (Gmin - 1) * (N - 1) / (N - k_total)",
-        "    meat <- meat_cluster(Xe, cl1) + meat_cluster(Xe, cl2) - meat_cluster(Xe, cl12)",
-        "    V <- XtX_inv %*% (ssc * meat) %*% XtX_inv",
+        "    G1 <- nlevels(cl1); G2 <- nlevels(cl2); G12 <- nlevels(cl12)",
+        "    if (G1 <= 1L || G2 <= 1L || G12 <= 1L) return(NULL)",
+        "    # fixest ssc() default cluster.df='conventional': per-cluster G/(G-1) factor",
+        "    # combined with the (N-1)/(N-K) finite-sample correction (K.fixef='nonnested').",
+        "    nk <- (N - 1) / (N - k_total)",
+        "    meat <- (G1 / (G1 - 1)) * meat_cluster(Xe, cl1) +",
+        "            (G2 / (G2 - 1)) * meat_cluster(Xe, cl2) -",
+        "            (G12 / (G12 - 1)) * meat_cluster(Xe, cl12)",
+        "    V <- XtX_inv %*% (nk * meat) %*% XtX_inv",
         "  } else {",
         "    stop('unsupported cluster count')",
         "  }",
@@ -387,7 +482,7 @@ def _write_fixest_script(
         "  q <- qr(X, tol = tol)",
         "  sort(q$pivot[seq_len(q$rank)])",
         "}",
-        f"df <- read.csv({_r_string(str(data_csv))}, check.names = FALSE, stringsAsFactors = FALSE)",
+        f"df <- read_dataset({_r_string(str(data_path))})",
         f"specs <- read.csv({_r_string(str(specs_csv))}, check.names = FALSE, stringsAsFactors = FALSE)",
         f"y_var <- {_r_string(y)}",
         f"x_var <- {_r_string(x)}",
@@ -398,10 +493,14 @@ def _write_fixest_script(
         "n_workers <- if (nthreads <= 0L) 8L else max(1L, as.integer(nthreads))",
         "demean_nthreads <- n_workers",
         f"results_path <- {_r_string(str(results_path))}",
-        "all_must <- unique(unlist(lapply(specs$chosen_must_controls, read_json_vec), use.names = FALSE))",
-        "all_test <- unique(unlist(lapply(specs$chosen_test_controls, read_json_vec), use.names = FALSE))",
+        "spec_must <- lapply(specs$chosen_must_controls, read_json_vec)",
+        "spec_test <- lapply(specs$chosen_test_controls, read_json_vec)",
+        "spec_is_full <- as.logical(specs$is_full)",
+        "all_must <- unique(unlist(spec_must, use.names = FALSE))",
+        "all_test <- unique(unlist(spec_test, use.names = FALSE))",
         "all_controls <- unique(c(all_must, all_test))",
-        "base_vars <- unique(c(y_var, x_var, all_controls, cluster_vars, fe_base_vars(fe_terms)))",
+        "fe_base_vars_all <- fe_base_vars(fe_terms)",
+        "base_vars <- unique(c(y_var, x_var, all_controls, cluster_vars, fe_base_vars_all))",
         "base_vars <- base_vars[nzchar(base_vars)]",
         "missing_vars <- setdiff(base_vars, names(df))",
         "if (length(missing_vars)) stop(paste('missing variables:', paste(missing_vars, collapse = ', ')))",
@@ -414,29 +513,35 @@ def _write_fixest_script(
         "  for (v in spec_vars) { if (v %in% names(col_notna)) mask <- mask & col_notna[[v]] }",
         "  mask",
         "}",
-        "sample_masks <- list()",
-        "sample_values <- list()",
+        "common_must <- if (length(spec_must)) Reduce(intersect, spec_must) else character(0)",
+        "base_spec_vars <- unique(c(y_var, x_var, common_must, cluster_vars, fe_base_vars_all))",
+        "base_mask <- fast_complete(base_spec_vars)",
+        "complete_from_base <- function(chosen_must, chosen_test) {",
+        "  mask <- base_mask",
+        "  extra_vars <- unique(setdiff(c(chosen_must, chosen_test), common_must))",
+        "  for (v in extra_vars) { if (v %in% names(col_notna)) mask <- mask & col_notna[[v]] }",
+        "  mask",
+        "}",
+        "sample_cache <- new_cache()",
         *([
-            "ds_cache_keys <- list()",
-            "ds_cache_vals <- list()",
+            "ds_cache <- new_cache()",
             "drop_singletons_c <- function(init_mask) {",
-            "  for (j in seq_along(ds_cache_keys)) {",
-            "    if (identical(init_mask, ds_cache_keys[[j]])) return(ds_cache_vals[[j]])",
-            "  }",
+            "  key <- mask_key(init_mask)",
+            "  cached <- cache_get(ds_cache, key)",
+            "  if (!is.null(cached)) return(cached)",
             "  r <- drop_singletons(init_mask, fe_list_full)",
-            "  ds_cache_keys[[length(ds_cache_keys) + 1L]] <<- init_mask",
-            "  ds_cache_vals[[length(ds_cache_vals) + 1L]] <<- r",
+            "  cache_set(ds_cache, key, r)",
             "  r",
             "}",
         ] if drop_singletons_option else []),
-        "get_sample <- function(mask) {",
-        "  if (length(sample_masks)) {",
-        "    for (j in seq_along(sample_masks)) {",
-        "      if (identical(mask, sample_masks[[j]])) return(sample_values[[j]])",
-        "    }",
-        "  }",
+        "get_sample <- function(mask, key = NULL) {",
+        "  if (is.null(key)) key <- mask_key(mask)",
+        "  cached <- cache_get(sample_cache, key)",
+        "  if (!is.null(cached)) return(cached)",
         "  work <- df[mask, , drop = FALSE]",
         "  fe_list <- make_fe_list(fe_terms, work)",
+        "  fe_codes <- lapply(fe_list, function(v) { f <- factor(v); list(codes = as.integer(f), nlev = nlevels(f)) })",
+        "  cluster_factors <- lapply(cluster_vars, function(nm) factor(work[[nm]]))",
         "  available_controls <- all_controls",
         "  if (length(available_controls)) {",
         "    complete_control <- vapply(work[, available_controls, drop = FALSE], function(v) all(!is.na(v)), logical(1))",
@@ -451,36 +556,34 @@ def _write_fixest_script(
         "  )",
         "  dm <- as.matrix(dm)",
         "  colnames(dm) <- demean_vars",
-        "  clusters <- lapply(cluster_vars, function(nm) work[[nm]])",
         "  value <- list(",
         "    dm = dm,",
-        "    clusters = clusters,",
-        "    k_fe_full = k_fe_count(fe_list),",
-        "    k_fe_se = k_fe_nonnested(fe_list, clusters, se_kind),",
+        "    clusters = cluster_factors,",
+        "    k_fe_full = k_fe_count_from_codes(fe_codes),",
+        "    k_fe_se = k_fe_nonnested_from_codes(fe_codes, cluster_factors, se_kind),",
         "    N = nrow(work)",
         "  )",
-        "  sample_masks[[length(sample_masks) + 1L]] <<- mask",
-        "  sample_values[[length(sample_values) + 1L]] <<- value",
+        "  cache_set(sample_cache, key, value)",
         "  value",
         "}",
+        "get_sample_by_key <- function(key) {",
+        "  cached <- cache_get(sample_cache, key)",
+        "  if (is.null(cached)) stop('internal error: sample cache miss')",
+        "  cached",
+        "}",
         "process_one_spec <- function(i) {",
-        "  chosen_must <- read_json_vec(specs$chosen_must_controls[[i]])",
-        "  chosen_test <- read_json_vec(specs$chosen_test_controls[[i]])",
+        "  chosen_must <- spec_must[[i]]",
+        "  chosen_test <- spec_test[[i]]",
         "  if (length(cluster_vars) > 1L) {",
+        "    # Multi-way clusters: defer to feols to match its native SSC scheme",
+        "    # exactly (the shared-demean path uses Gmin SSC which diverges).",
         "    exact_row <- run_feols_spec(chosen_must, chosen_test)",
-        "    if (!is.null(exact_row)) {",
-        "      exact_row$is_full <- as.logical(specs$is_full[[i]])",
-        "    }",
+        "    if (!is.null(exact_row)) exact_row$is_full <- spec_is_full[[i]]",
         "    return(exact_row)",
         "  }",
         "  rhs_vars <- unique(c(x_var, chosen_must, chosen_test))",
-        "  spec_vars <- unique(c(y_var, rhs_vars, cluster_vars, fe_base_vars(fe_terms)))",
-        "  mask <- fast_complete(spec_vars)",
-        *([
-            "  mask <- drop_singletons_c(mask)",
-        ] if drop_singletons_option else []),
-        "  if (sum(mask) <= 1L) return(NULL)",
-        "  sample <- get_sample(mask)",
+        "  if (!spec_valid[[i]]) return(NULL)",
+        "  sample <- get_sample_by_key(spec_sample_keys[[i]])",
         "  dm <- sample$dm",
         "  if (!all(rhs_vars %in% colnames(dm))) return(NULL)",
         "  X_raw <- dm[, rhs_vars, drop = FALSE]",
@@ -489,8 +592,10 @@ def _write_fixest_script(
         "  X <- X_raw[, keep, drop = FALSE]",
         "  kept_vars <- colnames(X)",
         "  y_dm <- as.numeric(dm[, y_var])",
-        "  fit <- tryCatch(lm.fit(x = X, y = y_dm), error = function(e) NULL)",
-        "  if (is.null(fit) || anyNA(fit$coefficients) || !(x_var %in% names(fit$coefficients))) return(NULL)",
+        "  fit <- tryCatch(.lm.fit(X, y_dm), error = function(e) NULL)",
+        "  if (is.null(fit) || anyNA(fit$coefficients)) return(NULL)",
+        "  x_idx <- match(x_var, kept_vars)",
+        "  if (is.na(x_idx)) return(NULL)",
         "  e <- as.numeric(fit$residuals)",
         "  N <- nrow(X)",
         "  k_total_df <- ncol(X) + sample$k_fe_full",
@@ -500,33 +605,36 @@ def _write_fixest_script(
         "  if (is.null(vcov_mat)) return(NULL)",
         "  se_vec <- sqrt(pmax(diag(vcov_mat), 0))",
         "  names(se_vec) <- kept_vars",
-        "  coef <- unname(fit$coefficients[[x_var]])",
-        "  se <- unname(se_vec[[x_var]])",
+        "  coef_full <- fit$coefficients",
+        "  names(coef_full) <- kept_vars",
+        "  coef <- unname(coef_full[[x_idx]])",
+        "  se <- unname(se_vec[[x_idx]])",
         "  if (!is.finite(coef) || !is.finite(se) || se <= 0) return(NULL)",
         "  t_value <- coef / se",
         "  p_df <- df_resid",
         "  if (se_kind == 'cluster' && length(sample$clusters)) {",
-        "    p_df <- max(1L, min(vapply(sample$clusters, function(cl) nlevels(factor(cl)), integer(1))) - 1L)",
+        "    p_df <- max(1L, min(vapply(sample$clusters, function(cl) nlevels(cl), integer(1))) - 1L)",
         "  }",
         "  p_value <- 2 * stats::pt(abs(t_value), df = p_df, lower.tail = FALSE)",
         "  crit99 <- stats::qt(0.995, df = p_df)",
         "  crit95 <- stats::qt(0.975, df = p_df)",
         "  crit90 <- stats::qt(0.950, df = p_df)",
         "  sse <- sum(e^2)",
-        "  tss <- sum((y_dm)^2)",
+        "  tss <- sum(y_dm^2)",
         "  within_r2 <- if (tss > 0) 1 - sse / tss else NA_real_",
         "  adj_r2 <- if (is.finite(within_r2) && df_resid > 0) 1 - (1 - within_r2) * ((N - 1) / df_resid) else NA_real_",
         "  f_stat <- NA_real_",
         "  vcov_inv <- tryCatch(solve(vcov_mat), error = function(err) NULL)",
         "  if (!is.null(vcov_inv)) {",
-        "    beta <- as.numeric(fit$coefficients)",
+        "    beta <- as.numeric(coef_full)",
         "    f_stat <- as.numeric(t(beta) %*% vcov_inv %*% beta / length(beta))",
         "  }",
         "  ctrl_stats <- list()",
         "  for (ctrl in c(chosen_must, chosen_test)) {",
         "    if (ctrl %in% kept_vars) {",
-        "      ctrl_coef <- unname(fit$coefficients[[ctrl]])",
-        "      ctrl_se <- unname(se_vec[[ctrl]])",
+        "      idx <- match(ctrl, kept_vars)",
+        "      ctrl_coef <- unname(coef_full[[idx]])",
+        "      ctrl_se <- unname(se_vec[[idx]])",
         "      ctrl_t <- ctrl_coef / ctrl_se",
         "      ctrl_stats[[length(ctrl_stats) + 1L]] <- list(",
         "        name = ctrl,",
@@ -548,21 +656,34 @@ def _write_fixest_script(
         "    controls_test = json_vec(kept_test),",
         "    controls_all = json_vec(controls_all),",
         "    control_stats = json_stats(ctrl_stats),",
-        "    is_full = as.logical(specs$is_full[[i]]),",
+        "    is_full = spec_is_full[[i]],",
         "    obs = N,",
-        "    check.names = FALSE",
+        "    check.names = FALSE,",
+        "    stringsAsFactors = FALSE",
         "  )",
         "}",
-        "if (length(cluster_vars) <= 1L) {",
-        "  union_vars <- unique(c(y_var, x_var, all_controls, cluster_vars, fe_base_vars(fe_terms)))",
-        "  union_vars <- union_vars[nzchar(union_vars) & union_vars %in% names(df)]",
-        "  union_mask <- fast_complete(union_vars)",
-        *([
-            "  union_mask <- drop_singletons_c(union_mask)",
-        ] if drop_singletons_option else []),
-        "  if (sum(union_mask) > 1L) get_sample(union_mask)",
-        "}",
         "spec_ids <- seq_len(nrow(specs))",
+        "seen_sample_keys <- new_cache()",
+        "unique_masks <- list()",
+        "unique_sample_keys <- character(0)",
+        "spec_sample_keys <- rep(NA_character_, length(spec_ids))",
+        "spec_valid <- rep(FALSE, length(spec_ids))",
+        "if (length(cluster_vars) <= 1L) for (i in spec_ids) {",
+        "  mask_i <- complete_from_base(spec_must[[i]], spec_test[[i]])",
+        *([
+            "  mask_i <- drop_singletons_c(mask_i)",
+        ] if drop_singletons_option else []),
+        "  if (sum(mask_i) <= 1L) next",
+        "  k <- mask_key(mask_i)",
+        "  spec_sample_keys[[i]] <- k",
+        "  spec_valid[[i]] <- TRUE",
+        "  if (is.null(cache_get(seen_sample_keys, k))) {",
+        "    cache_set(seen_sample_keys, k, TRUE)",
+        "    unique_masks[[length(unique_masks) + 1L]] <- mask_i",
+        "    unique_sample_keys <- c(unique_sample_keys, k)",
+        "  }",
+        "}",
+        "for (j in seq_along(unique_masks)) get_sample(unique_masks[[j]], unique_sample_keys[[j]])",
         "if (n_workers > 1L && .Platform$OS.type != 'windows') {",
         "  out <- parallel::mclapply(spec_ids, process_one_spec, mc.cores = n_workers, mc.preschedule = TRUE)",
         "} else {",
@@ -572,7 +693,11 @@ def _write_fixest_script(
         "if (length(out) == 0) {",
         "  write.csv(data.frame(), results_path, row.names = FALSE)",
         "} else {",
-        "  res <- do.call(rbind, out)",
+        "  if (has_dt) {",
+        "    res <- as.data.frame(data.table::rbindlist(out, fill = TRUE))",
+        "  } else {",
+        "    res <- do.call(rbind, out)",
+        "  }",
         "  res <- res[order(res$coef), , drop = FALSE]",
         "  write.csv(res, results_path, row.names = FALSE, fileEncoding = 'UTF-8')",
         "}",
@@ -601,16 +726,9 @@ def _run_rscript(rscript_path: str, script_path: pathlib.Path, log_path: pathlib
             f"R script: {script_path.resolve()}\n"
             f"Log file: {log_path.resolve()}\n"
             "R log tail:\n"
-            f"{_tail_text(log_path)}"
+            f"{rm_common._tail_text(log_path)}"
         )
 
-
-def _tail_text(path: pathlib.Path, max_lines: int = 80) -> str:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except FileNotFoundError:
-        return "(log file not found)"
-    return "\n".join(lines[-max_lines:])
 
 
 def _records_from_r_csv(results_path: pathlib.Path, log_path: pathlib.Path, script_path: pathlib.Path) -> list[rm.SpecRecord]:
@@ -623,7 +741,7 @@ def _records_from_r_csv(results_path: pathlib.Path, log_path: pathlib.Path, scri
             f"R script: {script_path.resolve()}\n"
             f"Log file: {log_path.resolve()}\n"
             "R log tail:\n"
-            f"{_tail_text(log_path)}"
+            f"{rm_common._tail_text(log_path)}"
         ) from exc
     if df_res.empty:
         raise RuntimeError(
@@ -632,7 +750,7 @@ def _records_from_r_csv(results_path: pathlib.Path, log_path: pathlib.Path, scri
             f"R script: {script_path.resolve()}\n"
             f"Log file: {log_path.resolve()}\n"
             "R log tail:\n"
-            f"{_tail_text(log_path)}"
+            f"{rm_common._tail_text(log_path)}"
         )
     return rm.records_from_dataframe(df_res)
 
@@ -663,8 +781,28 @@ def run_r_engine(
         time_fe=args.time_fe,
         region_fe=args.region_fe,
     )
-    input_csv = run_output_dir / f"{data_path.stem}_r_input.csv"
-    df.to_csv(input_csv, index=False, encoding="utf-8")
+
+    r_packages = _probe_r_packages(args.rscript_path)
+    use_feather = r_packages["arrow"]
+
+    required_cols, factor_cols = _required_cols_for_run(
+        df=df,
+        args=args,
+        controls_must_flat=controls_must_flat,
+        controls_test_flat=controls_test_flat,
+        var_map=var_map,
+        spec_flags=spec_flags,
+    )
+    df_subset = df[required_cols]
+
+    if use_feather:
+        input_path = run_output_dir / f"{data_path.stem}_r_input.feather"
+        data_format = "feather"
+    else:
+        input_path = run_output_dir / f"{data_path.stem}_r_input.csv"
+        data_format = "csv"
+    _write_input_dataset(df_subset, input_path, factor_cols, use_feather=use_feather)
+
     outputs: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     for y_var, x_var in itertools.product(args.y, args.x):
@@ -683,14 +821,14 @@ def run_r_engine(
             specs_csv = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_r_specs.csv"
             results_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_results.csv"
             meta_path = run_output_dir / f"{y_var}_{x_var}_{spec_def['tag']}_plot_meta.json"
-            output_path = _render_output_path(
+            output_path = rm_common._render_output_path(
                 run_output_dir,
                 str(spec_def["tag"]),
                 f"{y_var}_{x_var}_{spec_def['tag']}.png",
                 args.export_format,
             )
             title_suffix = spec_def["help"].format(**fmt)
-            base_regression_count = _control_spec_count(controls_must_slots, controls_test_slots)
+            base_regression_count = rm._spec_count_from_slots(controls_must_slots, controls_test_slots)
 
             print(f"[R] 运行规格：{spec_display}")
             print(rm._format_plot_regression_count(base_regression_count))
@@ -702,7 +840,8 @@ def run_r_engine(
             )
             _write_fixest_script(
                 script_path=script_path,
-                data_csv=input_csv.resolve(),
+                data_path=input_path.resolve(),
+                data_format=data_format,
                 specs_csv=specs_csv.resolve(),
                 results_path=results_path.resolve(),
                 y=y_var,
@@ -775,7 +914,7 @@ def run_r_engine(
         outputs[(y_var, x_var)] = pair_items
 
     if not args.keep_temp:
-        rm_common.safe_unlink(input_csv)
+        rm_common.safe_unlink(input_path)
     return outputs
 
 

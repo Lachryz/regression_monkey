@@ -16,7 +16,7 @@ The workflow and output design draw on Stata's `spec_curve` command and extend i
 
 ![PNG mode example](assets/png-sample.png)
 
-**HTML mode** — a self-contained interactive webpage. It opens in `COMPACT` by default only when there are more than 1024 specifications; smaller charts disable `COMPACT` and open in `DETAIL`. Hover to highlight a specification across all panels; click to pin it in `DETAIL` mode. Sort specifications by coefficient, observation count, or signed significance. The top toolbar includes `DETAIL` and `COMPACT` view modes; `COMPACT` is a non-interactive chart display mode that hides the right details panel, disables central-chart hover/click selection, fits all specification columns into the chart viewport, and draws PNG-style continuous lines or thin bars instead of separate rounded blocks. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture. COEF points are smaller in both modes, with compact points scaled to the compressed column width. In the STAR panel, non-significant specifications draw one hollow rounded cell with a white interior above or below the center according to coefficient sign in `DETAIL`; in `COMPACT`, adjacent non-significant cells collapse into continuous dashed direction-colored lines. STARS center, COEF zero, and OBS mean reference lines use the same red dashed style. In the CONTROL panel, compact-mode vertical marks fill the full height of their corresponding control row and use consistent black coloring across sort modes unless a special marker or alternative-group color applies; alternative-group I-brackets occupy a reserved left gutter so they are not covered by variable labels, with centered dashed vertical strokes, colors matching the control-variable labels, and visible gaps between adjacent optional groups. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present.
+**HTML mode** — a self-contained interactive webpage. It opens in `COMPACT` by default only when there are more than 1024 specifications; smaller charts disable `COMPACT` and open in `DETAIL`. Hover to highlight a specification across all panels; click to pin it in `DETAIL` mode. Sort specifications by coefficient, observation count, or signed significance. The top toolbar includes `DETAIL` and `COMPACT` view modes; `COMPACT` is a non-interactive chart display mode that hides the right details panel, disables central-chart hover/click selection, stops shrinking column width once it reaches the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After the compact plot is rendered, it is cached as one bitmap and scrolling redraws only the visible image slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture. COEF points are smaller in both modes, with compact points scaled to the compact baseline column width. In the STAR panel, non-significant specifications draw one hollow rounded cell with a white interior above or below the center according to coefficient sign in `DETAIL`; in `COMPACT`, adjacent non-significant cells collapse into continuous dashed direction-colored lines. STARS center, COEF zero, and OBS mean reference lines use the same red dashed style. In the CONTROL panel, compact-mode vertical marks fill the full height of their corresponding control row and use consistent black coloring across sort modes unless a special marker or alternative-group color applies; alternative-group I-brackets occupy a reserved left gutter so they are not covered by variable labels, with centered dashed vertical strokes, colors matching the control-variable labels, and visible gaps between adjacent optional groups. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present.
 
 ![HTML mode example](assets/html-sample.png)
 
@@ -40,7 +40,7 @@ Core dependencies: `numpy`, `pandas`, `matplotlib`, `pyreadstat`.
 
 ## Quick start
 
-The recommended workflow is config-file driven. Copy `config/regression_monkey_example.toml`, fill in your variable names and file path, then run:
+The recommended workflow is config-file driven. Copy `config/config.example.toml`, fill in your variable names and file path, then run:
 
 ```bash
 uv run regression-monkey
@@ -49,26 +49,26 @@ uv run regression-monkey
 Or point to the config explicitly:
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml
+uv run regression-monkey config/config.toml
 ```
 
 CLI flags override any TOML value:
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --dpi 600 --n-jobs 0
+uv run regression-monkey config/config.toml --dpi 600 --n-jobs 0
 ```
 
 Export format is controlled by `--export-format`:
 
 ```bash
 # PNG only (default)
-uv run regression-monkey config/regression_monkey_config.toml --export-format png
+uv run regression-monkey config/config.toml --export-format png
 
 # Interactive HTML only
-uv run regression-monkey config/regression_monkey_config.toml --export-format html
+uv run regression-monkey config/config.toml --export-format html
 
 # Both
-uv run regression-monkey config/regression_monkey_config.toml --export-format both
+uv run regression-monkey config/config.toml --export-format both
 ```
 
 ## Configuration file
@@ -96,7 +96,9 @@ absorb_firm_indtime_vce_cluster_firm = true
 absorb_ind_time_vce_cluster_firm     = true
 ```
 
-A complete template is at `config/regression_monkey_example.toml`.
+A complete template is at `config/config.example.toml`.
+
+The refactored package keeps compatibility aliases at package root, so older imports such as `from regression_monkey import py, stata, html` still resolve to the new `engine/` and `plot/` modules.
 
 ## Input data
 
@@ -175,7 +177,7 @@ Star values: `+3/+2/+1` for positive coefficients significant at 99%/95%/90%; `-
 Switch to `reghdfe` by setting `engine = "stata"` in TOML or passing `--engine stata`:
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine stata
+uv run regression-monkey config/config.toml --engine stata
 ```
 
 The Stata engine also supports subgroup heterogeneity analysis via `grouping_variable_by_ind_time`, `grouping_variable_by_time`, or `grouping_variable_by_none`. For each grouping variable, one extended figure is produced showing the main coefficient curve, `b_z=0/1` subgroup curves, and the `c.x#c.z` interaction coefficient — all in the same PNG. The legacy key `grouping_variable` remains as an alias for `grouping_variable_by_ind_time`.
@@ -185,10 +187,46 @@ The Stata engine also supports subgroup heterogeneity analysis via `grouping_var
 Switch to the R/fixest implementation by setting `engine = "r"` in TOML or passing `--engine r`:
 
 ```bash
-uv run regression-monkey config/regression_monkey_config.toml --engine r
+uv run regression-monkey config/config.toml --engine r
 ```
 
-The R engine runs catalog auto specs through `Rscript` and `fixest`. Each specification keeps the same effective sample it would have under per-spec `feols`; specifications with identical effective samples share a cached `fixest::demean()` call, and the absorbed matrix is then reused with `lm.fit()`. Robust and one-way clustered SE are computed on that absorbed matrix with `fixest`-matched absorbed-FE degree-of-freedom accounting. `f_stat` is the joint Wald F for all non-absorbed regressors, matching Stata `reghdfe` `e(F)`. The R path parallelizes the post-demean specification loop with `parallel::mclapply`; `n_jobs = 0` uses 8 worker processes by default, and `--n-jobs N` sets the worker count explicitly. Multi-way clustered specs fall back to exact per-spec `feols` because `fixest` may apply non-positive-definite VCOV repairs that should not be approximated. It requires a working `Rscript` plus the R package `fixest`; use `--rscript-path` or `rscript_path = "..."` if needed. Like the Stata engine, it currently supports auto specs only; subgroup `grouping_variable_*` plots remain Stata-only.
+The R engine lives in `src/regression_monkey/engine/r.py`. It writes a narrow handoff dataset containing only the variables needed by the enabled catalog specs, generates one temporary `.R` script per `Y × X × spec`, runs it with `Rscript`, then reads the standard `*_results.csv` / `*_plot_meta.json` contract used by the PNG and HTML exporters.
+
+R mode is accuracy-first. Each specification keeps the same effective sample it would have under per-spec `fixest::feols`; specifications with identical effective samples share a cached `fixest::demean()` call, and the absorbed matrix is then reused with `lm.fit()`. Robust and one-way clustered SE are computed on that absorbed matrix with `fixest`-matched absorbed-FE degree-of-freedom accounting. Multi-way clustered specs fall back to exact per-spec `feols` because `fixest` may apply non-positive-definite VCOV repairs that should not be approximated. Large-sample cache keys are stored as ordinary string values, not R environment variable names, so runs with tens of thousands of rows do not hit R's variable-name length limit.
+
+The effective-sample cache optimization is documented in [assets/R引擎样本缓存优化.md](assets/R引擎样本缓存优化.md).
+
+### Configure the R environment
+
+R mode requires a working `Rscript` and the R package `fixest`.
+
+```bash
+# macOS with Homebrew, if R is not installed yet
+brew install r
+
+# Install the required R package and optional speed-up packages
+Rscript -e 'install.packages(c("fixest", "data.table", "arrow"), repos = "https://cloud.r-project.org")'
+
+# Verify that Regression Monkey can find Rscript and fixest
+Rscript -e 'cat(R.version.string, "\n"); stopifnot(requireNamespace("fixest", quietly = TRUE))'
+```
+
+`arrow` is optional but recommended: when available, the Python side writes the R handoff data as Feather; otherwise it falls back to CSV. `data.table` is also optional and speeds up CSV reads when Feather is unavailable.
+
+If `Rscript` is not on `PATH`, point Regression Monkey at the exact executable:
+
+```bash
+uv run regression-monkey config/config.toml --engine r --rscript-path /path/to/Rscript
+```
+
+or set it in TOML:
+
+```toml
+engine = "r"
+rscript_path = "/path/to/Rscript"
+```
+
+R mode currently supports catalog auto specs only, so enable at least one `absorb_*` flag such as `absorb_firm_time_vce_cluster_firm = true`. Subgroup `grouping_variable_*` plots remain Stata-only. `n_jobs = 0` uses 8 R worker processes by default; `--n-jobs N` or `n_jobs = N` sets the worker count explicitly.
 
 ## Redrawing from saved results
 

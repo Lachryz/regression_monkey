@@ -1,0 +1,27 @@
+# config_snapshot.toml
+
+generated_at = "20260507_163036"
+engine = "r"
+data = "/Users/zhaoxun/Library/CloudStorage/坚果云-425841907@qq.com/同步/my_data/data/final/winsored.dta"
+y = ["analyst_error_quarter_pa", "analyst_dispersion_quarter_pa"]
+x = ["quant"]
+
+controls_test = ["Top1","absaemdd", "analyst_report", "business_complexity_indyearadj", "Big4", "disclosure_quality", "Loss", "Goodnews", "cnt_sent", "readability", "tone_index1", "similarity_tf_idf_3", "similarity_tf_idf_2", "meps_std_4y"]
+controls_must = ["qual", "no_info", "Lev", "Size", "ROA", "BM", "Growth", "SOE", "INST"]
+grouping_variable_by_ind_time = []
+grouping_variable_by_time = []
+grouping_variable_by_none = []
+output = "outputs"
+export_format = "html"
+run_output_dir = "outputs/20260507_163036"
+dpi = 300
+fig_width = 14
+order = "p"
+n_jobs = 0
+resolved_n_jobs = 9
+firm_fe = "code"
+ind_fe = "ind"
+time_fe = "year"
+region_fe = "pref"
+stata_path = "stata-mp"
+absorb_firm_time_vce_cluster_firm = true

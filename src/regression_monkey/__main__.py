@@ -14,14 +14,14 @@ import itertools
 import pathlib
 import sys
 from time import perf_counter
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import pandas as pd
 
 from . import common as rm_common
-from . import html as rm_html
-from . import plot as rm_plot
-from . import py as rm_py
+from .plot import html as rm_html
+from .plot import png as rm_plot
+from .engine import py as rm_py
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -88,27 +88,9 @@ def _drawable_auto_specs(spec_flags: dict[str, bool], region_fe: str | None) -> 
     ]
 
 
-def _safe_path_part(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
-    cleaned = "_".join(part for part in cleaned.split("_") if part)
-    return cleaned or "spec"
-
-
-def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
-    output_dir = run_output_dir / _safe_path_part(group_name)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir / filename
-
-
-def _render_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str, export_format: str) -> pathlib.Path:
-    if export_format == "html":
-        return run_output_dir / filename
-    return _plot_output_path(run_output_dir, group_name, filename)
-
-
 def _manual_plot_group(fe_cols: list[str], clust_cols: list[str]) -> str:
-    fe_part = "_".join(_safe_path_part(col) for col in fe_cols)
-    clust_part = "_".join(_safe_path_part(col) for col in clust_cols) if clust_cols else "robust"
+    fe_part = "_".join(rm_common._safe_path_part(col) for col in fe_cols)
+    clust_part = "_".join(rm_common._safe_path_part(col) for col in clust_cols) if clust_cols else "robust"
     return f"manual_ab_{fe_part}_cl_{clust_part}"
 
 
@@ -339,7 +321,7 @@ def _run_python_pair(
                 continue
             _, records, _fig = auto_results[0]
             spec_def = next(s for s in rm_py._SPEC_CATALOG if s["name"] == spec_name)
-            out_png = _render_output_path(
+            out_png = rm_common._render_output_path(
                 run_output_dir,
                 str(spec_def["tag"]),
                 f"{pair_stem}_{spec_def['tag']}.png",
@@ -409,7 +391,7 @@ def _run_python_pair(
         export_sig_table=False,
         render_plot=False,
     )
-    out_png = _render_output_path(
+    out_png = rm_common._render_output_path(
         run_output_dir,
         _manual_plot_group(list(args.fe), clust_cols),
         f"{pair_stem}.png",
@@ -624,32 +606,7 @@ def _main_impl() -> None:
     def on_plot_done(output_path: pathlib.Path, fe_type: tuple[str, ...], elapsed_seconds: float) -> None:
         print(plot_progress.update(fe_type, elapsed_seconds))
 
-    def plot_stata_item(item: dict[str, Any]) -> None:
-        callback_t0 = perf_counter()
-        meta_path = item["meta_path"]
-        results_path = item["results_path"]
-        output_path = item["output_path"]
-        meta = rm_plot.load_plot_meta(meta_path)
-        meta["elapsed_seconds_preplot"] = float(item["elapsed_seconds"])
-        meta["export_format"] = args.export_format
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        _render_from_files(
-            results_path=results_path,
-            meta_path=meta_path,
-            output_path=output_path,
-            export_format=args.export_format,
-            verbose=False,
-            html_bundle_payloads=html_bundle_payloads,
-        )
-        _cleanup_plot_handoff(
-            results_path=results_path,
-            meta_path=meta_path,
-            keep_temp=bool(args.keep_temp),
-        )
-        elapsed_with_render = float(item["elapsed_seconds"]) + (perf_counter() - callback_t0)
-        on_plot_done(output_path, tuple(item.get("fe_type", ())), elapsed_with_render)
-
-    def plot_external_item(item: dict[str, Any]) -> None:
+    def _plot_item(item: dict[str, Any]) -> None:
         callback_t0 = perf_counter()
         meta_path = item["meta_path"]
         results_path = item["results_path"]
@@ -677,7 +634,7 @@ def _main_impl() -> None:
     print(f"{_format_plot_progress(0, plot_progress.total)}  总导出数：{plot_progress.total}")
 
     if args.engine == "stata":
-        from . import stata as rm_stata
+        from .engine import stata as rm_stata
 
         external_results = rm_stata.run_stata_engine(
             df=df,
@@ -694,10 +651,10 @@ def _main_impl() -> None:
             matrix_alt_groups=matrix_alt_groups,
             spec_flags=spec_flags,
             run_output_dir=run_output_dir,
-            on_item_ready=plot_stata_item,
+            on_item_ready=_plot_item,
         )
     elif args.engine == "r":
-        from . import r as rm_r
+        from .engine import r as rm_r
 
         external_results = rm_r.run_r_engine(
             df=df,
@@ -713,7 +670,7 @@ def _main_impl() -> None:
             matrix_alt_groups=matrix_alt_groups,
             spec_flags=spec_flags,
             run_output_dir=run_output_dir,
-            on_item_ready=plot_external_item,
+            on_item_ready=_plot_item,
         )
     else:
         external_results = {}

@@ -359,10 +359,6 @@ def _normalize_plot_order(order: str | None, *, p_alias: bool = False) -> str:
     return normalized
 
 
-def _order_sorts_by_signed_p(order: str | None, *, p_alias: bool = False) -> bool:
-    return _normalize_plot_order(order, p_alias=p_alias) == "p"
-
-
 def _order_uses_p_mode(order: str | None, *, p_alias: bool = False) -> bool:
     return _normalize_plot_order(order, p_alias=p_alias) == "p"
 
@@ -602,23 +598,6 @@ def _best_mp_context() -> Any:
     if platform.system() != "Darwin" and "fork" in methods:
         return mp.get_context("fork")
     return mp.get_context("spawn")
-
-
-def _calc_se(
-    X2: np.ndarray,
-    e: np.ndarray,
-    k_total: int,
-    se_kind: str,
-    se_args: SeArgs,
-) -> np.ndarray:
-    """根据预计算的聚类信息计算标准误。"""
-    if se_kind == "two_way":
-        return _cgm_se(X2, e, *se_args, k_total)
-    if se_kind == "one_way":
-        return _se_single(X2, e, *se_args, k_total)
-    if se_kind == "robust":
-        return _se_robust(X2, e, *se_args, k_total)
-    raise ValueError(f"unknown se_kind: {se_kind}")
 
 
 def _valid_mask(arr: np.ndarray) -> np.ndarray:

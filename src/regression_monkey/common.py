@@ -67,3 +67,29 @@ def safe_unlink(path: pathlib.Path) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+
+
+def _safe_path_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+    cleaned = "_".join(part for part in cleaned.split("_") if part)
+    return cleaned or "spec"
+
+
+def _plot_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str) -> pathlib.Path:
+    output_dir = run_output_dir / _safe_path_part(group_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / filename
+
+
+def _render_output_path(run_output_dir: pathlib.Path, group_name: str, filename: str, export_format: str) -> pathlib.Path:
+    if export_format == "html":
+        return run_output_dir / filename
+    return _plot_output_path(run_output_dir, group_name, filename)
+
+
+def _tail_text(path: pathlib.Path, max_lines: int = 80) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return "(log file not found)"
+    return "\n".join(lines[-max_lines:])

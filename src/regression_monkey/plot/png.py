@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import pandas as pd
 
-from . import py as rm_py
+from ..engine import py as rm_py
 
 
 def load_plot_meta(meta_path: pathlib.Path) -> dict[str, Any]:
