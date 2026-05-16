@@ -1,7 +1,7 @@
 """
 regression_monkey
 =================
-主入口：读取配置/CLI，调度 Python 或 Stata 分析引擎，再调用独立绘图脚本。
+主入口：读取配置/CLI，调度 Python、Stata 或 R 分析引擎，再调用独立绘图脚本。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from . import py as rm_py
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--engine", choices=["python", "stata"], default="python")
+    parser.add_argument("--engine", choices=["python", "stata", "r"], default="python")
     parser.add_argument("--data", metavar="FILE")
     parser.add_argument("--y", metavar="VAR", nargs="+")
     parser.add_argument("--x", metavar="VAR", nargs="+")
@@ -51,7 +51,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--order", choices=["coef", "p"], default="coef", help="绘图排序方式：coef 或 p")
     parser.add_argument("--p", action="store_true", help="兼容别名；等价于 --order p")
     parser.add_argument("--stata-path", default="stata-mp", metavar="EXE")
+    parser.add_argument("--rscript-path", default="Rscript", metavar="EXE")
     parser.add_argument("--keep-temp", action="store_true")
+    parser.add_argument("--drop-singletons", dest="drop_singletons", action="store_true", default=True)
+    parser.add_argument("--no-drop-singletons", dest="drop_singletons", action="store_false")
     for spec_name in rm_py._ALL_SPEC_NAMES:
         parser.add_argument(f"--{spec_name.replace('_', '-')}", dest=spec_name, action="store_true")
 
@@ -452,7 +455,7 @@ def _run_python_pair(
     return pair_sig_rows, pair_total_specs
 
 
-def main() -> None:
+def _main_impl() -> None:
     try:
         cfg, cli_args = rm_common.load_toml_config(sys.argv[1:])
     except FileNotFoundError as exc:
@@ -461,7 +464,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="regression_monkey",
-        description="规格曲线分析主入口：调度 Python/Stata 分析并独立绘图。",
+        description="规格曲线分析主入口：调度 Python/Stata/R 分析并独立绘图。",
     )
     _add_common_args(parser)
     if cfg:
@@ -470,7 +473,7 @@ def main() -> None:
             "grouping_variable", "grouping_variable_by_ind_time",
             "grouping_variable_by_time", "grouping_variable_by_none",
             "output", "dpi", "fig_width", "n_jobs", "order", "p", "firm_fe", "ind_fe", "time_fe",
-            "region_fe", "fe", "clust", "gen_clust2", "stata_path", "keep_temp", "export_format",
+            "region_fe", "fe", "clust", "gen_clust2", "stata_path", "rscript_path", "keep_temp", "drop_singletons", "export_format",
         } | set(rm_py._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
@@ -512,8 +515,8 @@ def main() -> None:
 
     spec_flags = _enabled_specs(args)
     is_auto = any(spec_flags.values())
-    if not is_auto and args.engine == "stata":
-        parser.error("Stata 引擎仅支持自动规格模式，请至少启用一个 absorb_* flag。")
+    if not is_auto and args.engine in {"stata", "r"}:
+        parser.error(f"{args.engine} 引擎仅支持自动规格模式，请至少启用一个 absorb_* flag。")
     grouping_specs = rm_py._collect_grouping_variable_specs(
         grouping_variable=list(args.grouping_variable or []),
         grouping_variable_by_ind_time=list(args.grouping_variable_by_ind_time or []),
@@ -561,10 +564,8 @@ def main() -> None:
         "data": str(args.data),
         "y": list(args.y),
         "x": list(args.x),
-        "controls_test": controls_test,
-        "controls_test_flat": controls_test_flat,
-        "controls_must": controls_must,
-        "controls_must_flat": controls_must_flat,
+        "controls_test": controls_test_flat,
+        "controls_must": controls_must_flat,
         "grouping_variable_by_ind_time": [var for scope, var in grouping_specs if scope == "by_ind_time"],
         "grouping_variable_by_time": [var for scope, var in grouping_specs if scope == "by_time"],
         "grouping_variable_by_none": [var for scope, var in grouping_specs if scope == "by_none"],
@@ -584,6 +585,8 @@ def main() -> None:
         snapshot_config["region_fe"] = args.region_fe
     if args.engine == "stata":
         snapshot_config["stata_path"] = args.stata_path
+    if args.engine == "r":
+        snapshot_config["rscript_path"] = args.rscript_path
     snapshot_config.update({name: enabled for name, enabled in spec_flags.items() if enabled})
     rm_py._write_config_snapshot(snapshot_config, run_output_dir / "config_snapshot.toml")
 
@@ -622,6 +625,7 @@ def main() -> None:
         print(plot_progress.update(fe_type, elapsed_seconds))
 
     def plot_stata_item(item: dict[str, Any]) -> None:
+        callback_t0 = perf_counter()
         meta_path = item["meta_path"]
         results_path = item["results_path"]
         output_path = item["output_path"]
@@ -642,14 +646,40 @@ def main() -> None:
             meta_path=meta_path,
             keep_temp=bool(args.keep_temp),
         )
-        on_plot_done(output_path, tuple(item.get("fe_type", ())), float(item["elapsed_seconds"]))
+        elapsed_with_render = float(item["elapsed_seconds"]) + (perf_counter() - callback_t0)
+        on_plot_done(output_path, tuple(item.get("fe_type", ())), elapsed_with_render)
+
+    def plot_external_item(item: dict[str, Any]) -> None:
+        callback_t0 = perf_counter()
+        meta_path = item["meta_path"]
+        results_path = item["results_path"]
+        output_path = item["output_path"]
+        meta = rm_plot.load_plot_meta(meta_path)
+        meta["elapsed_seconds_preplot"] = float(item["elapsed_seconds"])
+        meta["export_format"] = args.export_format
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _render_from_files(
+            results_path=results_path,
+            meta_path=meta_path,
+            output_path=output_path,
+            export_format=args.export_format,
+            verbose=False,
+            html_bundle_payloads=html_bundle_payloads,
+        )
+        _cleanup_plot_handoff(
+            results_path=results_path,
+            meta_path=meta_path,
+            keep_temp=bool(args.keep_temp),
+        )
+        elapsed_with_render = float(item["elapsed_seconds"]) + (perf_counter() - callback_t0)
+        on_plot_done(output_path, tuple(item.get("fe_type", ())), elapsed_with_render)
 
     print(f"{_format_plot_progress(0, plot_progress.total)}  总导出数：{plot_progress.total}")
 
     if args.engine == "stata":
         from . import stata as rm_stata
 
-        stata_results = rm_stata.run_stata_engine(
+        external_results = rm_stata.run_stata_engine(
             df=df,
             data_path=data_path.resolve(),
             args=args,
@@ -666,8 +696,27 @@ def main() -> None:
             run_output_dir=run_output_dir,
             on_item_ready=plot_stata_item,
         )
+    elif args.engine == "r":
+        from . import r as rm_r
+
+        external_results = rm_r.run_r_engine(
+            df=df,
+            data_path=data_path.resolve(),
+            args=args,
+            controls_test=controls_test,
+            controls_must=controls_must,
+            controls_test_flat=controls_test_flat,
+            controls_test_slots=controls_test_slots,
+            controls_must_flat=controls_must_flat,
+            controls_must_slots=controls_must_slots,
+            matrix_controls=matrix_controls,
+            matrix_alt_groups=matrix_alt_groups,
+            spec_flags=spec_flags,
+            run_output_dir=run_output_dir,
+            on_item_ready=plot_external_item,
+        )
     else:
-        stata_results = {}
+        external_results = {}
 
     for idx, (y_var, x_var) in enumerate(combos, 1):
         print(f"\n{'#'*60}")
@@ -698,7 +747,7 @@ def main() -> None:
             pair_rows = []
             pair_total_specs = 0
             pair_summary_rows = []
-            for item in stata_results.get((y_var, x_var), []):
+            for item in external_results.get((y_var, x_var), []):
                 records = item["records"]
                 pair_rows.extend(item["sig_rows"])
                 if item.get("counts_as_base_spec", True):
@@ -736,11 +785,18 @@ def main() -> None:
     print(f"\n全部完成：{len(combos)} 个 y×x 组合")
 
 
-if __name__ == "__main__":
+def main() -> None:
     try:
-        main()
+        _main_impl()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt as exc:
         print("\n已中断。", file=sys.stderr)
         if exc.args:
             print(str(exc.args[0]), file=sys.stderr)
         sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

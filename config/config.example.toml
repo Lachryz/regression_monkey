@@ -4,6 +4,7 @@
 # 运行：
 #   uv run regression_monkey.py regression_monkey_example.toml
 #   uv run regression_monkey.py regression_monkey_example.toml --engine stata
+#   uv run regression_monkey.py regression_monkey_example.toml --engine r
 #
 # 说明：
 # - controls_must 中的普通变量会进入每个规格。
@@ -40,11 +41,14 @@ grouping_variable_by_none = []
 # ── 输出 ──────────────────────────────────────────────────────
 output = "outputs"
 export_format = "html"  # png / html / both
+engine = "python"       # python / stata / r
 dpi = 300
 fig_width = 14
 n_jobs = 0              # 0 表示自动，最多使用 9 核
 order = "p"             # coef：按系数；p：负系数左侧 p 从大到小，正系数右侧 p 从小到大
 keep_temp = false
+# R 模式可按需指定 Rscript 路径；默认使用 PATH 中的 Rscript。
+rscript_path = "Rscript"
 
 # ── 固定效应变量列名 ──────────────────────────────────────────
 Firm_FE = "firm_id"

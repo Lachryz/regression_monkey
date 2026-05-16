@@ -60,15 +60,22 @@ uv run regression-monkey config/config.example.toml
 uv run regression-monkey config/config.example.toml --dpi 600 --n-jobs 0
 ```
 
-默认使用 Python 引擎。也可以在 TOML 中设置 `engine = "stata"`，或在命令行指定：
+默认使用 Python 引擎。也可以在 TOML 中设置 `engine = "stata"` / `engine = "r"`，或在命令行指定：
 
 ```bash
 uv run regression-monkey config/config.example.toml --engine stata
+uv run regression-monkey config/config.example.toml --engine r
 ```
 
 主入口会先调用对应分析引擎写出临时的 `*_results.csv` 和 `*_plot_meta.json`，再调用独立导出脚本生成结果。默认生成 PNG；如果希望用交互式网页替代图片，可传 `--export-format html`，或传 `--export-format both` 同时导出 PNG 和 HTML。导出成功后，主入口默认会删除这两个临时文件；如需保留用于调试或重画，请传 `--keep-temp`。
 
-若使用 Stata 引擎，还可以在 TOML / CLI 中设置 `grouping_variable_by_ind_time`、`grouping_variable_by_time`、`grouping_variable_by_none`。这些列可以是连续数值变量；程序会为每个分组变量生成一张扩展图，同图展示主回归系数、按动态中位数二分后的两组分组回归系数，以及把 `c.x#c.z` 加入 RHS 后的交乘项系数。Python 引擎暂不支持这些参数。旧参数 `grouping_variable` 仍可用，等价于 `grouping_variable_by_ind_time`。
+PNG 和 HTML 的标题元数据都会显示本图使用的分析引擎：`python`、`stata` 或 `r`。HTML 中该信息位于规格数量旁；PNG 中位于顶部标题信息行。
+
+外部引擎的耗时统计会把本次运行的 handoff/setup 时间、模型估计时间和导出渲染时间纳入进度估计；Stata 模式下首张图会计入临时 `.dta` 准备时间。
+
+交互式 HTML 在切换排序时会复用导出时保存的系数轴比例，因此置信区间的视觉长度与结果文件中的 `ci90/ci95/ci99` 数值保持一致。
+
+若使用 Stata 引擎，还可以在 TOML / CLI 中设置 `grouping_variable_by_ind_time`、`grouping_variable_by_time`、`grouping_variable_by_none`。这些列可以是连续数值变量；程序会为每个分组变量生成一张扩展图，同图展示主回归系数、按动态中位数二分后的两组分组回归系数，以及把 `c.x#c.z` 加入 RHS 后的交乘项系数。Python / R 引擎暂不支持这些参数。旧参数 `grouping_variable` 仍可用，等价于 `grouping_variable_by_ind_time`。
 
 这种方式最适合日常批量运行，因为：
 
@@ -314,6 +321,7 @@ HTML 会把 Courier New 字体以内嵌 `@font-face` 的形式写入文件，因
   - `p < 0.05` / 2 星显著：`#00F900` Spring
   - `p < 0.10` / 1 星显著：`#0433FF` BlueBerry
   - 不显著：黑色
+- HTML 顶栏显著性图例与系数点保持同色，`n.s.` 为黑色。
 - `Star` 面板按显著性星级显示格数，方向由系数符号决定：
   - 不显著：中轴黑色 `0` 线
   - 负系数显著：`#0433FF` BlueBerry
@@ -441,12 +449,24 @@ Stata 正常运行时，控制台只打印当前规格的可读 `absorb(...) vce
 
 - 若未指定 `--keep-temp`，运行结束后会自动删除中间 `.do`、`.log` 和临时结果文件
 
+## R / fixest 模式
+
+仓库还提供 `src/regression_monkey/r.py`，用于调用 `Rscript` 并通过 `fixest` 复现 `reghdfe` 风格的固定效应回归。R 模式现在以准确度优先：每个规格仍保留与逐条 `feols` 相同的有效样本；有效样本完全相同的规格共享一次缓存的 `fixest::demean()`，随后复用吸收后的矩阵并用 `lm.fit()` 进行纯矩阵 OLS。稳健和一维聚类标准误在吸收后的矩阵上计算，并对齐 `fixest` 的固定效应自由度校正；`f_stat` 使用所有非吸收回归变量的联合 Wald F，与 Stata `reghdfe` 的 `e(F)` 对齐。R 路径会用 `parallel::mclapply` 并行 post-demean 规格循环；`n_jobs = 0` 默认使用 8 个 worker 进程，`--n-jobs N` 可显式指定进程数。多维聚类规格回退到逐规格 `feols` 精确路径，因为 `fixest` 可能对非正定 VCOV 做修正，不适合近似复刻。这样只在不改变结果口径的前提下减少重复固定效应迭代。
+
+推荐仍然通过主入口调度：
+
+```bash
+uv run regression-monkey config/regression_monkey_config.toml --engine r
+```
+
+R 模式需要系统可执行的 `Rscript` 和 R 包 `fixest`；如果不在 PATH 中，可通过 `--rscript-path /path/to/Rscript` 或 TOML 中的 `rscript_path = "/path/to/Rscript"` 指定。R 模式当前只支持自动规格模式，需要至少启用一个 `absorb_*` flag；分组扩展图仍仅支持 Stata 引擎。
+
 ## 开发与验证
 
 推荐的基础检查：
 
 ```bash
-uv run python -m py_compile src/regression_monkey/__main__.py src/regression_monkey/py.py src/regression_monkey/stata.py src/regression_monkey/plot.py src/regression_monkey/html.py
+uv run python -m py_compile src/regression_monkey/__main__.py src/regression_monkey/py.py src/regression_monkey/stata.py src/regression_monkey/r.py src/regression_monkey/plot.py src/regression_monkey/html.py
 ```
 
 用现有 TOML 跑 Python 引擎端到端：
@@ -476,7 +496,7 @@ uv run regression-monkey-html \
 实现约定：
 
 - `__main__.py` 保持轻量，只做配置、调度、汇总和调用绘图
-- `py.py` 和 `stata.py` 不直接生成 PNG，只写标准结果文件和绘图元数据
+- `py.py`、`stata.py` 和 `r.py` 不直接生成 PNG，只写标准结果文件和绘图元数据
 - `plot.py` 只读取 `*_results.csv` 和 `*_plot_meta.json`
 - `html.py` 也只读取 `*_results.csv` 和 `*_plot_meta.json`
 - 主入口绘图成功后默认删除每张图对应的 `*_results.csv` 和 `*_plot_meta.json`；`--keep-temp` 用于保留这些中间文件

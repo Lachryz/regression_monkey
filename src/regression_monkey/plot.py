@@ -67,6 +67,7 @@ def plot_from_files(
         output_path=str(out),
         title_suffix=meta.get("title_suffix"),
         elapsed_seconds_preplot=meta.get("elapsed_seconds_preplot"),
+        engine=meta.get("engine"),
         grouping_variable=meta.get("grouping_variable"),
         grouped_plot_records=list(meta.get("grouped_plot_records", [])),
         interaction_plot_records=list(meta.get("interaction_plot_records", [])),

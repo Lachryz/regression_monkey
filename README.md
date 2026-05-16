@@ -16,9 +16,17 @@ The workflow and output design draw on Stata's `spec_curve` command and extend i
 
 ![PNG mode example](assets/png-sample.png)
 
-**HTML mode** — a self-contained interactive webpage. Hover to highlight a specification across all panels; click to pin it. Sort specifications by coefficient, observation count, or signed significance. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present.
+**HTML mode** — a self-contained interactive webpage. It opens in `COMPACT` by default only when there are more than 1024 specifications; smaller charts disable `COMPACT` and open in `DETAIL`. Hover to highlight a specification across all panels; click to pin it in `DETAIL` mode. Sort specifications by coefficient, observation count, or signed significance. The top toolbar includes `DETAIL` and `COMPACT` view modes; `COMPACT` is a non-interactive chart display mode that hides the right details panel, disables central-chart hover/click selection, fits all specification columns into the chart viewport, and draws PNG-style continuous lines or thin bars instead of separate rounded blocks. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture. COEF points are smaller in both modes, with compact points scaled to the compressed column width. In the STAR panel, non-significant specifications draw one hollow rounded cell with a white interior above or below the center according to coefficient sign in `DETAIL`; in `COMPACT`, adjacent non-significant cells collapse into continuous dashed direction-colored lines. STARS center, COEF zero, and OBS mean reference lines use the same red dashed style. In the CONTROL panel, compact-mode vertical marks fill the full height of their corresponding control row and use consistent black coloring across sort modes unless a special marker or alternative-group color applies; alternative-group I-brackets occupy a reserved left gutter so they are not covered by variable labels, with centered dashed vertical strokes, colors matching the control-variable labels, and visible gaps between adjacent optional groups. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present.
 
 ![HTML mode example](assets/html-sample.png)
+
+Both PNG and HTML title metadata show the analysis engine (`python`, `stata`, or `r`) used for the exported figure.
+
+For external engines, elapsed-time metadata includes the engine handoff/setup step that belongs to the run, the model-estimation time, and the export rendering time reported in progress output.
+
+Interactive HTML uses the persisted coefficient-axis scale when re-sorting specifications, so CI bands keep the same visual length implied by the saved `ci90/ci95/ci99` values.
+
+The HTML significance legend uses the same colors as the coefficient points; `n.s.` is black.
 
 ## Requirements
 
@@ -171,6 +179,16 @@ uv run regression-monkey config/regression_monkey_config.toml --engine stata
 ```
 
 The Stata engine also supports subgroup heterogeneity analysis via `grouping_variable_by_ind_time`, `grouping_variable_by_time`, or `grouping_variable_by_none`. For each grouping variable, one extended figure is produced showing the main coefficient curve, `b_z=0/1` subgroup curves, and the `c.x#c.z` interaction coefficient — all in the same PNG. The legacy key `grouping_variable` remains as an alias for `grouping_variable_by_ind_time`.
+
+## R engine
+
+Switch to the R/fixest implementation by setting `engine = "r"` in TOML or passing `--engine r`:
+
+```bash
+uv run regression-monkey config/regression_monkey_config.toml --engine r
+```
+
+The R engine runs catalog auto specs through `Rscript` and `fixest`. Each specification keeps the same effective sample it would have under per-spec `feols`; specifications with identical effective samples share a cached `fixest::demean()` call, and the absorbed matrix is then reused with `lm.fit()`. Robust and one-way clustered SE are computed on that absorbed matrix with `fixest`-matched absorbed-FE degree-of-freedom accounting. `f_stat` is the joint Wald F for all non-absorbed regressors, matching Stata `reghdfe` `e(F)`. The R path parallelizes the post-demean specification loop with `parallel::mclapply`; `n_jobs = 0` uses 8 worker processes by default, and `--n-jobs N` sets the worker count explicitly. Multi-way clustered specs fall back to exact per-spec `feols` because `fixest` may apply non-positive-definite VCOV repairs that should not be approximated. It requires a working `Rscript` plus the R package `fixest`; use `--rscript-path` or `rscript_path = "..."` if needed. Like the Stata engine, it currently supports auto specs only; subgroup `grouping_variable_*` plots remain Stata-only.
 
 ## Redrawing from saved results
 
