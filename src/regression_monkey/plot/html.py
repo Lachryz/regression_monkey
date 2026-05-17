@@ -1123,6 +1123,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .coef-badge.neg-sig-1 {{ background: #BFDBFE; }}
     .coef-badge.neg-sig-2 {{ background: #1E3A8A; }}
     .coef-badge.neg-sig-3 {{ background: #0433FF; }}
+    .coef-badge.pos-sig-1, .coef-badge.neg-sig-1 {{ color: #111827; }}
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
     .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
