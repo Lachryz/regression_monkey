@@ -36,7 +36,7 @@ The HTML significance legend uses the same colors as the coefficient points; `n.
 
 In `DETAIL`, the right-side control-coefficient badge text is white for significant controls. Significant badge backgrounds use the same 1/2/3 red-blue color levels as STARS. `0+` and `0-` use a light gray background with deep red/deep blue text.
 
-The HTML Controls color switch defaults to `gray`, continuous gray run-length shading for the control matrix. Switching to `sig` colors each included control cell by that control's own coefficient significance, using the same red/blue signed levels as STARS and the right sidebar, with gray for insignificant or missing stats. In `sig`, all `controls_must` variables are also drawn in the control matrix, ordered before the regular varying matrix controls.
+The HTML Controls color switch defaults to `gray`, continuous gray run-length shading for the control matrix. `gray` draws only the regular varying matrix controls and does not reserve blank rows for `controls_must`. Switching to `sig` colors each included control cell by that control's own coefficient significance, using the same red/blue signed levels as STARS and the right sidebar, with gray for insignificant or missing stats. In `sig`, all `controls_must` variables are also drawn in the control matrix, ordered before the regular varying matrix controls.
 
 ## Requirements
 

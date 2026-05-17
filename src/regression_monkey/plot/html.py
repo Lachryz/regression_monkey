@@ -1296,6 +1296,18 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     return state.controlColor === 'stats' ? SIG_MATRIX_CONTROLS : BASE_MATRIX_CONTROLS;
   }}
 
+  function matrixH() {{
+    return Math.max(ROW_H, matrixControls().length * ROW_H);
+  }}
+
+  function obsPanelY() {{
+    return MATRIX_Y + matrixH() + 24;
+  }}
+
+  function totalH() {{
+    return obsPanelY() + OBS_H + 22;
+  }}
+
   function controlIncluded(rec, name) {{
     const names = state.controlColor === 'stats'
       ? (rec.controls_all || [])
@@ -1314,8 +1326,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     let lo = Math.min(OBS_MIN, OBS_MEAN, OBS_MAX);
     let hi = Math.max(OBS_MIN, OBS_MEAN, OBS_MAX);
     if (lo === hi) {{ lo -= 1; hi += 1; }} else {{ const p = (hi - lo) * 0.06; lo -= p; hi += p; }}
-    if (Math.abs(hi - lo) < 1e-12) return OBS_Y + OBS_H / 2;
-    return OBS_Y + OBS_H - ((v - lo) / (hi - lo)) * OBS_H;
+    const oy = obsPanelY();
+    if (Math.abs(hi - lo) < 1e-12) return oy + OBS_H / 2;
+    return oy + OBS_H - ((v - lo) / (hi - lo)) * OBS_H;
   }}
 
   /* ── State ──────────────────────────────────────────────── */
@@ -1385,18 +1398,27 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   function resizeCanvas() {{
     const w = chartVScroll.clientWidth;
     const dpr = window.devicePixelRatio || 1;
+    const th = totalH();
     cvMain.width  = w * dpr;
-    cvMain.height = TOTAL_H * dpr;
+    cvMain.height = th * dpr;
     cvMain.style.width  = w + 'px';
-    cvMain.style.height = TOTAL_H + 'px';
+    cvMain.style.height = th + 'px';
     cvOv.width  = w * dpr;
-    cvOv.height = TOTAL_H * dpr;
+    cvOv.height = th * dpr;
     cvOv.style.width  = w + 'px';
-    cvOv.style.height = TOTAL_H + 'px';
+    cvOv.style.height = th + 'px';
     mainCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ovCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    leftSb.style.height = TOTAL_H + 'px';
+    leftSb.style.height = th + 'px';
     leftSb.style.width  = LEFT + 'px';
+    syncObsTickPositions();
+  }}
+
+  function syncObsTickPositions() {{
+    const vals = [OBS_MAX, OBS_MEAN, OBS_MIN];
+    document.querySelectorAll('.obs-tick').forEach((el, idx) => {{
+      el.style.top = (obsY(vals[idx] ?? OBS_MEAN) - 6) + 'px';
+    }});
   }}
 
   const ro = new ResizeObserver(() => {{
@@ -1587,8 +1609,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         ctx.moveTo(x, COEF_Y); ctx.lineTo(x, Math.max(COEF_Y, coefAt - gapR));
         ctx.moveTo(x, Math.min(COEF_Y + COEF_H, coefAt + gapR)); ctx.lineTo(x, COEF_Y + COEF_H);
       }}
-      ctx.moveTo(x, MATRIX_Y); ctx.lineTo(x, MATRIX_Y + MATRIX_H);
-      ctx.moveTo(x, OBS_Y); ctx.lineTo(x, OBS_Y + OBS_H);
+      ctx.moveTo(x, MATRIX_Y); ctx.lineTo(x, MATRIX_Y + matrixH());
+      const oy = obsPanelY();
+      ctx.moveTo(x, oy); ctx.lineTo(x, oy + OBS_H);
       ctx.stroke();
       ctx.setLineDash([]);
     }}
@@ -1639,11 +1662,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         ctx.strokeStyle = sign < 0 ? STAR_ZERO_NEG : STAR_ZERO_POS;
         ctx.lineWidth = 1.65;
         ctx.stroke();
-        const innerR = Math.max(1.7, side * 0.42);
-        ctx.beginPath();
-        ctx.arc(x, cy0, innerR, 0, Math.PI * 2);
-        ctx.fillStyle = STAR_ZERO_STROKE;
-        ctx.fill();
         continue;
       }}
       for (let blk = 0; blk < rec.star; blk++) {{
@@ -1811,7 +1829,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   /* ── White sidebar mask (sticky left labels) ────────────── */
   function drawSidebarMask(ctx) {{
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, LEFT, TOTAL_H);
+    ctx.fillRect(0, 0, LEFT, totalH());
   }}
 
   /* ── Main render ────────────────────────────────────────── */
@@ -1825,7 +1843,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const ci = [90, 95, 99].filter(k => state.showCI[k]).join('');
     return [
       chartVScroll.clientWidth,
-      TOTAL_H,
+      totalH(),
       dpr,
       N,
       xStep().toFixed(8),
@@ -1851,7 +1869,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (state.mode !== 'compact' || N <= 0) return false;
     const dpr = window.devicePixelRatio || 1;
     const w = compactBitmapCssWidth();
-    const h = Math.max(1, Math.ceil(TOTAL_H));
+    const h = Math.max(1, Math.ceil(totalH()));
     return (
       w * dpr <= MAX_COMPACT_BITMAP_DIM
       && h * dpr <= MAX_COMPACT_BITMAP_DIM
@@ -1867,19 +1885,20 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const dpr = window.devicePixelRatio || 1;
     const cssW = compactBitmapCssWidth();
     const cssPlotW = Math.max(0, cssW - LEFT - RIGHT);
+    const th = totalH();
     const bmp = document.createElement('canvas');
     bmp.width = Math.ceil(cssW * dpr);
-    bmp.height = Math.ceil(TOTAL_H * dpr);
+    bmp.height = Math.ceil(th * dpr);
     const bmpCtx = bmp.getContext('2d');
     bmpCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    bmpCtx.clearRect(0, 0, cssW, TOTAL_H);
+    bmpCtx.clearRect(0, 0, cssW, th);
 
     const oldScrollX = state.scrollX;
     state.scrollX = 0;
     bmpCtx.save();
     try {{
       bmpCtx.beginPath();
-      bmpCtx.rect(LEFT, 0, cssPlotW, TOTAL_H);
+      bmpCtx.rect(LEFT, 0, cssPlotW, th);
       bmpCtx.clip();
       drawBackground(bmpCtx, cssW);
       drawCIBands(bmpCtx, 0, N - 1);
@@ -1902,6 +1921,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!bmp) return false;
     mainCtx.clearRect(0, 0, cvMain.width, cvMain.height);
     const dpr = window.devicePixelRatio || 1;
+    const th = totalH();
     const visibleW = Math.max(0, chartVScroll.clientWidth - LEFT - RIGHT);
     const sourceX = LEFT + state.scrollX;
     const availableW = Math.max(0, compactBitmapCssWidth() - RIGHT - sourceX);
@@ -1912,11 +1932,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         sourceX * dpr,
         0,
         sw * dpr,
-        TOTAL_H * dpr,
+        th * dpr,
         LEFT,
         0,
         sw,
-        TOTAL_H
+        th
       );
     }}
     drawSidebarMask(mainCtx);
@@ -1936,7 +1956,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     // Clip to chart area to avoid bleeding into left/right margins during scroll
     mainCtx.save();
     mainCtx.beginPath();
-    mainCtx.rect(LEFT, 0, chartVScroll.clientWidth - LEFT - RIGHT, TOTAL_H);
+    mainCtx.rect(LEFT, 0, chartVScroll.clientWidth - LEFT - RIGHT, totalH());
     mainCtx.clip();
     drawBackground(mainCtx);
     drawCIBands(mainCtx, fc, lc);
@@ -1959,8 +1979,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const panelDefs = [
       [STAR_Y, STAR_H],
       [COEF_Y, COEF_H],
-      [MATRIX_Y, MATRIX_H],
-      [OBS_Y, OBS_H],
+      [MATRIX_Y, matrixH()],
+      [obsPanelY(), OBS_H],
     ];
     ctx.strokeStyle = '#D1D5DB';
     ctx.lineWidth = 1.25;
@@ -1984,8 +2004,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const panelDefs = [
       [STAR_Y, STAR_H, 'STARS'],
       [COEF_Y, COEF_H, 'COEF'],
-      [MATRIX_Y, MATRIX_H, 'CONTROLS'],
-      [OBS_Y, OBS_H, 'OBS'],
+      [MATRIX_Y, matrixH(), 'CONTROLS'],
+      [obsPanelY(), OBS_H, 'OBS'],
     ];
     for (const [py, ph, lbl] of panelDefs) {{
       const mid = py + ph / 2;
@@ -2007,14 +2027,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const vpW = chartVScroll.clientWidth;
     ovCtx.save();
     ovCtx.beginPath();
-    ovCtx.rect(LEFT, 0, vpW - LEFT - RIGHT, TOTAL_H);
+    ovCtx.rect(LEFT, 0, vpW - LEFT - RIGHT, totalH());
     ovCtx.clip();
     // Purple column tint — only within panel areas, skip inter-panel gaps
     ovCtx.fillStyle = 'rgba(124,58,237,0.15)';
     const step = xStep();
     const tw = step;
     const tx = x - step / 2;
-    for (const [py, ph] of [[STAR_Y,STAR_H],[COEF_Y,COEF_H],[MATRIX_Y,MATRIX_H],[OBS_Y,OBS_H]]) {{
+    for (const [py, ph] of [[STAR_Y,STAR_H],[COEF_Y,COEF_H],[MATRIX_Y,matrixH()],[obsPanelY(),OBS_H]]) {{
       ovCtx.fillRect(tx, py, tw, ph);
     }}
     // Active ring on coef point
@@ -2408,6 +2428,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     computeRunColors();
     invalidateCompactBitmap();
     syncControlColorButtons();
+    resizeCanvas();
+    updateScrollbar();
+    clearOverlay();
     requestRender();
   }});
 
