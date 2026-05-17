@@ -14,15 +14,15 @@ The workflow and output design draw on Stata's `spec_curve` command and extend i
 
 **PNG mode** — static publication-quality figure exported as a raster image.
 
-**HTML mode** — a self-contained interactive webpage with two view modes. It opens in `COMPACT` by default only when there are more than 1024 specifications; smaller charts disable `COMPACT` and open in `DETAIL`. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present, and sort specifications by coefficient, observation count, or signed significance.
+**HTML mode** — a self-contained interactive webpage with two view modes. It opens in compact mode by default only when there are more than 1024 specifications; smaller charts disable compact and open in detail. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present, and sort specifications by coefficient, observation count, or signed significance.
 
-`DETAIL` is the full interactive view. Hover highlights a specification across all panels, click pins the current specification, and the right details panel lists included controls in input order with per-control statistics. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture; STARS uses COEF-style round points stacked from bottom to top.
+`detail` is the full interactive view. Hover highlights a specification across all panels, click pins the current specification, and the right details panel lists included controls in input order with per-control statistics. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture; STARS uses COEF-style round points stacked from bottom to top.
 
-When switching Y, X, or fixed-effect spec in the top selector bar, the other selectors keep their current value when that value is still available; fixed-effect specs are preserved by matching the displayed spec label across Y/X combinations.
+When switching Y, X, or fixed-effect spec in the top selector bar, the other selectors keep their current value when that value is still available; fixed-effect specs are preserved by matching the displayed spec label across Y/X combinations. In-chart SORT, MODE, and Controls color selections also persist across top-selector switches when the target chart supports the selected mode, without flashing the default toolbar state during iframe reload.
 
 ![HTML DETAIL mode example](assets/detail-vision.png)
 
-`COMPACT` is the dense overview view for large specification sets. It hides the right details panel, disables central-chart hover/click selection, caps the column width at the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After rendering, the compact chart is cached as one bitmap and scrolling redraws only the visible slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. STARS uses segmented CONTROL-like color bars whose heights encode significance level, CONTROL and OBS use thin square bars, and compact COEF points scale to the compact baseline column width.
+`compact` is the dense overview view for large specification sets. It hides the right details panel, disables central-chart hover/click selection, caps the column width at the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After rendering, the compact chart is cached as one bitmap and scrolling redraws only the visible slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. STARS uses segmented CONTROL-like color bars whose heights encode significance level, CONTROL and OBS use thin square bars, and compact COEF points scale to the compact baseline column width.
 
 ![HTML COMPACT mode example](assets/compact-vision.png)
 
@@ -34,7 +34,9 @@ Interactive HTML uses the persisted coefficient-axis scale when re-sorting speci
 
 The HTML significance legend uses the same colors as the coefficient points; `n.s.` is black.
 
-In `DETAIL`, the right-side control-coefficient badge text is white for significant controls. Significant badge backgrounds use visibly tinted gray red/blue for 1 star, mid red/blue for 2 stars, and vivid red/blue for 3 stars. `0+` and `0-` use a light gray background with deep red/deep blue text.
+In `DETAIL`, the right-side control-coefficient badge text is white for significant controls. Significant badge backgrounds use the same 1/2/3 red-blue color levels as STARS. `0+` and `0-` use a light gray background with deep red/deep blue text.
+
+The HTML Controls color switch defaults to `gray`, continuous gray run-length shading for the control matrix. Switching to `sig` colors each included control cell by that control's own coefficient significance, using the same red/blue signed levels as STARS and the right sidebar, with gray for insignificant or missing stats. In `sig`, all `controls_must` variables are also drawn in the control matrix, ordered before the regular varying matrix controls.
 
 ## Requirements
 

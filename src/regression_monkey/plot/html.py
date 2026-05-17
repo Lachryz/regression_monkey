@@ -509,6 +509,16 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
     const specSel = document.getElementById("bundleSpec");
     const frame = document.getElementById("rmFrame");
     const count = document.getElementById("bundleCount");
+    window.__rmBundleState = window.__rmBundleState || {{ sort: "signed_p", mode: "", controlColor: "run" }};
+    window.addEventListener("message", event => {{
+      const data = event.data || {{}};
+      if (data.type !== "rmBundleState") return;
+      window.__rmBundleState = {{
+        sort: data.sort || window.__rmBundleState.sort || "signed_p",
+        mode: data.mode || window.__rmBundleState.mode || "",
+        controlColor: data.controlColor || window.__rmBundleState.controlColor || "run",
+      }};
+    }});
 
     function uniq(values) {{
       return [...new Set(values.map(v => String(v)))];
@@ -597,15 +607,29 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
     records = list(payload["records"])
     controls = list(payload["matrixControls"])
+    def _flat_control_names(values: Any) -> list[str]:
+        names: list[str] = []
+        for value in list(values or []):
+            if isinstance(value, (list, tuple)):
+                names.extend(_flat_control_names(value))
+            else:
+                names.append(str(value))
+        return names
+
+    must_controls = _flat_control_names(payload.get("controlsMustNames", []))
+    sig_controls = list(dict.fromkeys([*must_controls, *[str(c) for c in controls]]))
     alt_groups = list(payload.get("matrixAltGroups", []))
 
     n = len(records)
-    n_controls = len(controls)
+    n_controls = len(sig_controls)
     compact_threshold = 1024
     compact_base_n = 8192
     compact_enabled = n > compact_threshold
     initial_mode = "compact" if compact_enabled else "detail"
-    body_attrs = ' class="mode-compact"' if compact_enabled else ""
+    body_classes = ["rm-preinit"]
+    if compact_enabled:
+        body_classes.append("mode-compact")
+    body_attrs = f' class="{" ".join(body_classes)}"'
     compact_button_attrs = (
         ' class="active" aria-pressed="true"'
         if compact_enabled
@@ -619,7 +643,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     compact_enabled_js = "true" if compact_enabled else "false"
 
     # ── Geometry (mirrors _build_svg) ─────────────────────────────────────────
-    label_chars = max([len(str(c)) for c in controls] + [8])
+    label_chars = max([len(str(c)) for c in sig_controls] + [8])
     grp_pad = 46 if alt_groups else 0
     left = max(160, min(440, 76 + label_chars * 7 + grp_pad))
     right = 82
@@ -748,7 +772,17 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         color_style = f"color:{group_color};" if group_color else ""
         highlight_class = " starred" if name in starred_controls else ""
         control_label_items.append(
-            f'<div class="tick-lbl ctrl-lbl{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
+            f'<div class="tick-lbl ctrl-lbl ctrl-lbl-gray{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
+            f' style="top:{label_y_center - 7:.1f}px;{color_style}">{html.escape(str(name))}</div>'
+        )
+    for row, name in enumerate(sig_controls):
+        ry = matrix_y + row * row_h
+        label_y_center = ry + row_h * 0.65
+        group_color = alt_group_color_by_control.get(str(name), "")
+        color_style = f"color:{group_color};" if group_color else ""
+        highlight_class = " starred" if name in starred_controls else ""
+        control_label_items.append(
+            f'<div class="tick-lbl ctrl-lbl ctrl-lbl-sig{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
             f' style="top:{label_y_center - 7:.1f}px;{color_style}">{html.escape(str(name))}</div>'
         )
 
@@ -796,6 +830,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     # Pre-compute JSON fragments for JS constants
     alt_groups_js = _json_for_html(alt_groups)
     controls_js = _json_for_html(controls)
+    must_controls_js = _json_for_html(must_controls)
+    sig_controls_js = _json_for_html(sig_controls)
     alt_group_colors_js = _json_for_html(_ALT_GROUP_COLORS)
     alt_group_color_map_js = _json_for_html(alt_group_color_by_control)
     starred_controls_js = _json_for_html(list(starred_controls))
@@ -846,6 +882,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       flex-direction: column;
       overflow: hidden;
     }}
+    body.rm-preinit {{ visibility: hidden; }}
     header {{
       position: sticky;
       top: 0;
@@ -961,6 +998,10 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       z-index: 2;
     }}
     .ctrl-lbl.starred {{ background: #FEF3C7; border-radius: 2px; padding: 0 2px; }}
+    .ctrl-lbl-sig {{ display: none; }}
+    body.control-stats .ctrl-lbl-gray {{ display: none; }}
+    body.control-stats .ctrl-lbl-sig {{ display: block; }}
+    body.control-stats .alt-marker {{ display: none; }}
     .alt-marker {{
       position: absolute;
       left: 16px;
@@ -1076,12 +1117,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .coef-badge.neg-dir {{ color: #FFFFFF; }}
     .coef-badge.pos-zero {{ color: #DC2626; }}
     .coef-badge.neg-zero {{ color: #0433FF; }}
-    .coef-badge.pos-sig-1 {{ background: #EFC4C4; }}
-    .coef-badge.pos-sig-2 {{ background: #F4A7A7; }}
-    .coef-badge.pos-sig-3 {{ background: #FF6B5C; }}
-    .coef-badge.neg-sig-1 {{ background: #B8D0F0; }}
-    .coef-badge.neg-sig-2 {{ background: #A8C7F5; }}
-    .coef-badge.neg-sig-3 {{ background: #66A3FF; }}
+    .coef-badge.pos-sig-1 {{ background: #FCA5A5; }}
+    .coef-badge.pos-sig-2 {{ background: #F87171; }}
+    .coef-badge.pos-sig-3 {{ background: #FF2600; }}
+    .coef-badge.neg-sig-1 {{ background: #BFDBFE; }}
+    .coef-badge.neg-sig-2 {{ background: #60A5FA; }}
+    .coef-badge.neg-sig-3 {{ background: #0433FF; }}
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
     .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
@@ -1131,8 +1172,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     </div>
     <span class="rm-lbl">Mode</span>
     <div class="rm-seg" id="rmMode">
-      <button type="button" data-v="compact"{compact_button_attrs}>COMPACT</button>
-      <button type="button" data-v="detail"{detail_button_attrs}>DETAIL</button>
+      <button type="button" data-v="compact"{compact_button_attrs}>compact</button>
+      <button type="button" data-v="detail"{detail_button_attrs}>detail</button>
+    </div>
+    <span class="rm-divider"></span>
+    <span class="rm-lbl">Controls</span>
+    <div class="rm-seg" id="rmControlColor">
+      <button type="button" data-v="run" class="active" aria-pressed="true">gray</button>
+      <button type="button" data-v="stats" aria-pressed="false">sig</button>
     </div>
     <span class="rm-divider"></span>
     <span class="rm-lbl">Significance</span>
@@ -1241,7 +1288,20 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   const ALT_GROUP_COLOR_MAP = {alt_group_color_map_js};
   const STARRED_CONTROLS    = new Set({starred_controls_js});
-  const MATRIX_CONTROLS     = {controls_js};
+  const BASE_MATRIX_CONTROLS = {controls_js};
+  const MUST_CONTROLS        = {must_controls_js};
+  const SIG_MATRIX_CONTROLS  = {sig_controls_js};
+
+  function matrixControls() {{
+    return state.controlColor === 'stats' ? SIG_MATRIX_CONTROLS : BASE_MATRIX_CONTROLS;
+  }}
+
+  function controlIncluded(rec, name) {{
+    const names = state.controlColor === 'stats'
+      ? (rec.controls_all || [])
+      : (rec.included_matrix_controls || []);
+    return names.includes(name);
+  }}
 
   /* ── Scale helpers ──────────────────────────────────────── */
   function cy(v) {{
@@ -1259,15 +1319,49 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   /* ── State ──────────────────────────────────────────────── */
+  const BUNDLE_STATE = (() => {{
+    try {{
+      return (window.parent && window.parent !== window && window.parent.__rmBundleState)
+        ? window.parent.__rmBundleState
+        : {{}};
+    }} catch (e) {{
+      return {{}};
+    }}
+  }})();
+  const INITIAL_SORT = ['coef', 'obs', 'signed_p'].includes(BUNDLE_STATE.sort)
+    ? BUNDLE_STATE.sort
+    : 'signed_p';
+  const INITIAL_MODE = (BUNDLE_STATE.mode === 'compact' && COMPACT_ENABLED)
+    ? 'compact'
+    : (BUNDLE_STATE.mode === 'detail' ? 'detail' : '{initial_mode}');
+  const INITIAL_CONTROL_COLOR = ['run', 'stats'].includes(BUNDLE_STATE.controlColor)
+    ? BUNDLE_STATE.controlColor
+    : 'run';
   const state = {{
-    sort: 'signed_p',
-    mode: '{initial_mode}',
+    sort: INITIAL_SORT,
+    mode: INITIAL_MODE,
     sigFilter: new Set([0, 1, 2, 3]),
     showCI: {{ 99: true, 95: true, 90: true }},
     showFull: true,
     showNotest: true,
+    controlColor: INITIAL_CONTROL_COLOR,
     scrollX: 0,
   }};
+  function publishBundleState() {{
+    try {{
+      if (window.parent && window.parent !== window) {{
+        window.parent.__rmBundleState = {{ sort: state.sort, mode: state.mode, controlColor: state.controlColor }};
+        window.parent.postMessage({{
+          type: 'rmBundleState',
+          sort: state.sort,
+          mode: state.mode,
+          controlColor: state.controlColor,
+        }}, '*');
+      }}
+    }} catch (e) {{
+      // Standalone HTML has no parent bundle state.
+    }}
+  }}
   let sortedOrder = [];  // indices into records[]
   let activeIdx = -1;
   let pinnedIdx = -1;
@@ -1336,16 +1430,17 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   let runTValues = null; // Float32Array[N * nRows], index = col * nRows + row
 
   function computeRunColors() {{
-    const nRows = MATRIX_CONTROLS.length;
+    const controls = matrixControls();
+    const nRows = controls.length;
     if (nRows === 0 || N === 0) {{ runTValues = null; return; }}
     runTValues = new Float32Array(N * nRows);
     let maxRunLen = 1;
     const runs = [];
     for (let row = 0; row < nRows; row++) {{
-      const name = MATRIX_CONTROLS[row];
+      const name = controls[row];
       let start = null;
       for (let col = 0; col <= N; col++) {{
-        const included = col < N && records[sortedOrder[col]].included_matrix_controls.includes(name);
+        const included = col < N && controlIncluded(records[sortedOrder[col]], name);
         if (included && start === null) {{ start = col; }}
         else if (!included && start !== null) {{
           const rlen = col - start;
@@ -1410,6 +1505,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const vpW = viewportW;
     const plotW = Math.max(0, vpW - LEFT - RIGHT);
     const rxR = vpW - RIGHT; // right edge of clip region (screen coords)
+    const controls = matrixControls();
     // COEF grid lines (5 levels) — use screen coords to avoid 40k-px paths
     ctx.lineWidth = 0.75;
     for (let j = 0; j < 5; j++) {{
@@ -1421,7 +1517,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       ctx.stroke();
     }}
     // MATRIX row separators
-    for (let r = 0; r < MATRIX_CONTROLS.length; r++) {{
+    for (let r = 0; r < controls.length; r++) {{
       const ry = MATRIX_Y + r * ROW_H;
       ctx.strokeStyle = '#F3F4F6';
       ctx.lineWidth = 0.6;
@@ -1456,8 +1552,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     let cIdx = 0;
     for (const grp of altGroups) {{
       if (grp.kind !== 'controls_test') {{ cIdx++; continue; }}
-      const s = grp.start, e = grp.end;
-      if (s < 0 || e <= s || e >= MATRIX_CONTROLS.length) {{ cIdx++; continue; }}
+      const groupNames = BASE_MATRIX_CONTROLS.slice(grp.start, grp.end + 1);
+      const rows = groupNames.map(name => controls.indexOf(name)).filter(row => row >= 0);
+      if (!rows.length) {{ cIdx++; continue; }}
+      const s = Math.min(...rows), e = Math.max(...rows);
+      if (s < 0 || e <= s || e >= controls.length) {{ cIdx++; continue; }}
       const fill = altGroupColors[cIdx % altGroupColors.length];
       cIdx++;
       ctx.globalAlpha = 0.12;
@@ -1537,13 +1636,13 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         ctx.globalAlpha = 1.0;
         ctx.fill();
         ctx.globalAlpha = dimmed ? 0.13 : 1.0;
-        ctx.strokeStyle = STAR_ZERO_STROKE;
+        ctx.strokeStyle = sign < 0 ? STAR_ZERO_NEG : STAR_ZERO_POS;
         ctx.lineWidth = 1.65;
         ctx.stroke();
         const innerR = Math.max(1.7, side * 0.42);
         ctx.beginPath();
         ctx.arc(x, cy0, innerR, 0, Math.PI * 2);
-        ctx.fillStyle = sign < 0 ? STAR_ZERO_NEG : STAR_ZERO_POS;
+        ctx.fillStyle = STAR_ZERO_STROKE;
         ctx.fill();
         continue;
       }}
@@ -1619,13 +1718,24 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   /* ── Control matrix ─────────────────────────────────────── */
+  function statColorForControl(rec, name) {{
+    const stat = (rec.control_stats || []).find(item => item.name === name);
+    if (!stat) return '#9CA3AF';
+    const coef = Number(stat.coef);
+    const level = starLevel(Number(stat.p_value));
+    if (level === 0) return '#E5E7EB';
+    return (coef < 0 ? STAR_NEG_LEVEL : STAR_POS_LEVEL)[level];
+  }}
+
   function drawMatrix(ctx, fc, lc) {{
-    for (let ci = 0; ci < MATRIX_CONTROLS.length; ci++) {{
-      const name = MATRIX_CONTROLS[ci];
+    const controls = matrixControls();
+    const nRows = controls.length;
+    for (let ci = 0; ci < nRows; ci++) {{
+      const name = controls[ci];
       const ry = MATRIX_Y + ci * ROW_H;
       for (let col = fc; col <= lc; col++) {{
         const rec = records[sortedOrder[col]];
-        if (!rec.included_matrix_controls.includes(name)) continue;
+        if (!controlIncluded(rec, name)) continue;
         const dimmed = isDimmed(rec);
         ctx.globalAlpha = dimmed ? 0.13 : 1.0;
         const isFull   = state.showFull   && rec.is_full;
@@ -1635,11 +1745,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         const compact = state.mode === 'compact';
         let normalFill = '#1F2937';
         if (!compact && runTValues) {{
-          const t = runTValues[col * MATRIX_CONTROLS.length + ci];
+          const t = runTValues[col * nRows + ci];
           const v = Math.round(200 - 200 * t);
           normalFill = `rgb(${{v}},${{v}},${{v}})`;
         }}
-        ctx.fillStyle = compact ? (groupFill || normalFill) : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill));
+        const statsFill = statColorForControl(rec, name);
+        if (state.controlColor === 'stats') {{
+          ctx.fillStyle = statsFill;
+        }} else {{
+          ctx.fillStyle = compact ? (groupFill || normalFill) : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill));
+        }}
         const rw = compact ? Math.min(2.0, step * 0.55) : Math.max(1, step * 0.80);
         const rx = compact
           ? colX(col) - state.scrollX - rw / 2
@@ -1715,6 +1830,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       N,
       xStep().toFixed(8),
       state.sort,
+      state.controlColor,
       sig,
       ci,
       state.showFull ? 'F1' : 'F0',
@@ -2024,7 +2140,10 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
     // highlight control labels
     document.querySelectorAll('.ctrl-lbl').forEach(el => el.classList.remove('active-ctrl'));
-    (r.included_matrix_controls || []).forEach(name => {{
+    const highlightedControls = state.controlColor === 'stats'
+      ? (r.controls_all || [])
+      : (r.included_matrix_controls || []);
+    highlightedControls.forEach(name => {{
       document.querySelectorAll(`.ctrl-lbl[data-control="${{escHtml(name)}}"]`)
         .forEach(el => el.classList.add('active-ctrl'));
     }});
@@ -2225,6 +2344,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const btn = e.target.closest('button');
     if (!btn) return;
     state.sort = btn.dataset.v || 'signed_p';
+    publishBundleState();
     reSort();
     computeRunColors();
     invalidateCompactBitmap();
@@ -2255,6 +2375,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!btn || btn.disabled) return;
     if (btn.dataset.v === 'compact' && !COMPACT_ENABLED) return;
     state.mode = btn.dataset.v || 'detail';
+    publishBundleState();
     state.scrollX = 0;
     invalidateCompactBitmap();
     pinnedIdx = -1;
@@ -2266,6 +2387,28 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     resizeCanvas();
     requestRender();
     updateScrollbar();
+  }});
+
+  /* ── Control color mode ─────────────────────────────────── */
+  function syncControlColorButtons() {{
+    document.body.classList.toggle('control-stats', state.controlColor === 'stats');
+    document.querySelectorAll('#rmControlColor button').forEach(btn => {{
+      const selected = btn.dataset.v === state.controlColor;
+      btn.classList.toggle('active', selected);
+      btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    }});
+  }}
+  syncControlColorButtons();
+
+  document.getElementById('rmControlColor').addEventListener('click', e => {{
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    state.controlColor = btn.dataset.v || 'run';
+    publishBundleState();
+    computeRunColors();
+    invalidateCompactBitmap();
+    syncControlColorButtons();
+    requestRender();
   }});
 
   /* ── Significance filter chips ──────────────────────────── */
@@ -2312,6 +2455,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   /* ── Initial render ─────────────────────────────────────── */
   render();
   updateScrollbar();
+  document.body.classList.remove('rm-preinit');
 
   /* add ctrl-lbl active style */
   const style = document.createElement('style');
