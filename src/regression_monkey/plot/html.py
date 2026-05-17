@@ -1117,11 +1117,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .coef-badge.neg-dir {{ color: #FFFFFF; }}
     .coef-badge.pos-zero {{ color: #DC2626; }}
     .coef-badge.neg-zero {{ color: #0433FF; }}
-    .coef-badge.pos-sig-1 {{ background: #FCA5A5; }}
-    .coef-badge.pos-sig-2 {{ background: #F87171; }}
+    .coef-badge.pos-sig-1 {{ background: #FECACA; }}
+    .coef-badge.pos-sig-2 {{ background: #B91C1C; }}
     .coef-badge.pos-sig-3 {{ background: #FF2600; }}
     .coef-badge.neg-sig-1 {{ background: #BFDBFE; }}
-    .coef-badge.neg-sig-2 {{ background: #60A5FA; }}
+    .coef-badge.neg-sig-2 {{ background: #1E3A8A; }}
     .coef-badge.neg-sig-3 {{ background: #0433FF; }}
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
@@ -1271,8 +1271,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const OBS_MAX     = {obs_max_v!r};
   const OBS_MEAN    = {obs_mean_v!r};
 
-  const STAR_POS_LEVEL = ["", "#FCA5A5", "#F87171", "#FF2600"];
-  const STAR_NEG_LEVEL = ["", "#BFDBFE", "#60A5FA", "#0433FF"];
+  const STAR_POS_LEVEL = ["", "#FECACA", "#B91C1C", "#FF2600"];
+  const STAR_NEG_LEVEL = ["", "#BFDBFE", "#1E3A8A", "#0433FF"];
   const STAR_ZERO_POS  = "#DC2626";
   const STAR_ZERO_NEG  = "#0433FF";
   const STAR_ZERO_BG   = "#E5E7EB";
@@ -1741,7 +1741,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!stat) return '#9CA3AF';
     const coef = Number(stat.coef);
     const level = starLevel(Number(stat.p_value));
-    if (level === 0) return '#E5E7EB';
+    if (level === 0) return '#BFC5CF';
     return (coef < 0 ? STAR_NEG_LEVEL : STAR_POS_LEVEL)[level];
   }}
 
