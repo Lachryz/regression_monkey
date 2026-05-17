@@ -16,11 +16,11 @@ The workflow and output design draw on Stata's `spec_curve` command and extend i
 
 **HTML mode** — a self-contained interactive webpage with two view modes. It opens in `COMPACT` by default only when there are more than 1024 specifications; smaller charts disable `COMPACT` and open in `DETAIL`. Switch Y, X, and fixed-effect spec from a top selector bar when multiple combinations are present, and sort specifications by coefficient, observation count, or signed significance.
 
-`DETAIL` is the full interactive view. Hover highlights a specification across all panels, click pins the current specification, and the right details panel lists included controls in input order with per-control statistics. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture; non-significant STAR cells use hollow signed markers above or below the center line.
+`DETAIL` is the full interactive view. Hover highlights a specification across all panels, click pins the current specification, and the right details panel lists included controls in input order with per-control statistics. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture; STARS uses COEF-style round points stacked from bottom to top.
 
 ![HTML DETAIL mode example](assets/detail-vision.png)
 
-`COMPACT` is the dense overview view for large specification sets. It hides the right details panel, disables central-chart hover/click selection, caps the column width at the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After rendering, the compact chart is cached as one bitmap and scrolling redraws only the visible slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. STARS, CONTROL, and OBS use PNG-style continuous lines or thin square bars, while compact COEF points scale to the compact baseline column width.
+`COMPACT` is the dense overview view for large specification sets. It hides the right details panel, disables central-chart hover/click selection, caps the column width at the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After rendering, the compact chart is cached as one bitmap and scrolling redraws only the visible slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. STARS uses segmented CONTROL-like color bars whose heights encode significance level, CONTROL and OBS use thin square bars, and compact COEF points scale to the compact baseline column width.
 
 ![HTML COMPACT mode example](assets/compact-vision.png)
 
@@ -31,6 +31,8 @@ For external engines, elapsed-time metadata includes the engine handoff/setup st
 Interactive HTML uses the persisted coefficient-axis scale when re-sorting specifications, so CI bands keep the same visual length implied by the saved `ci90/ci95/ci99` values.
 
 The HTML significance legend uses the same colors as the coefficient points; `n.s.` is black.
+
+In `DETAIL`, the right-side control-coefficient badge text is white for significant controls. Significant badge backgrounds use visibly tinted gray red/blue for 1 star, mid red/blue for 2 stars, and vivid red/blue for 3 stars. `0+` and `0-` use a light gray background with deep red/deep blue text.
 
 ## Requirements
 
@@ -161,7 +163,7 @@ Add `--gen-clust2` to auto-generate a `fe[0]_fe[1]` second cluster column.
 
 Each run creates a timestamped subdirectory:
 
-```
+```md
 outputs/20260414_174122/
   config_snapshot.toml
   sig.csv

@@ -28,7 +28,7 @@ from ..engine import py as rm_py
 #   p < 0.10  →  steel blue
 #   n.s.      →  black
 
-_SIG_COLOR = ["#111827", "#1D4ED8", "#15803D", "#B91C1C"]  # nsig, 10%, 5%, 1%
+_SIG_COLOR = ["#111827", "#0433FF", "#00F900", "#FF2600"]  # nsig, 10%, 5%, 1%
 _SIG_BG = [
     "rgba(17,24,39,.12)",
     "rgba(29,78,216,.16)",
@@ -38,8 +38,6 @@ _SIG_BG = [
 _SIG_LABEL = ["n.s.", "p<0.10", "p<0.05", "p<0.01"]
 
 _OBS_FILL = "#9CA3AF"
-_STAR_POS = "#D98A8A"  # positive coef star cells, light red-gray
-_STAR_NEG = "#7EA6D9"  # negative coef star cells, light blue-gray
 _MAX_HTML_PANEL_PLOT_WIDTH = 1120
 _ALT_GROUP_COLORS = [
     "#0B3A75",  # deep blue
@@ -617,12 +615,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     grp_pad = 46 if alt_groups else 0
     left = max(160, min(440, 76 + label_chars * 7 + grp_pad))
     right = 82
-    star_h = 66
     coef_h = 296
     row_h = 18
     obs_h = 88
     gap = 12
     x_step = 7 if n <= 1600 else 5
+    star_cell_gap = 3
+    star_cell_size = 2 * max(1.6, min(2.6, x_step * 0.36))
+    star_h = int(math.ceil(3 * star_cell_size + 4 * star_cell_gap))
     matrix_h = max(row_h, n_controls * row_h)
 
     star_y = 20
@@ -814,9 +814,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       --bg:         #FFFFFF;
       --bg-2:       #F9FAFB;
       --active:     #7C3AED;
-      --sig1:       #B91C1C;
-      --sig5:       #15803D;
-      --sig10:      #1D4ED8;
+      --sig1:       #FF2600;
+      --sig5:       #00F900;
+      --sig10:      #0433FF;
       --nsig:       #111827;
       --mono: "RM Courier New", "Courier New", monospace;
       --sans: "RM Courier New", "Courier New", monospace;
@@ -1064,15 +1064,23 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       line-height: 1; font-variant-numeric: tabular-nums;
       border: 1px solid rgba(17,24,39,.08);
     }}
-    .coef-badge.pos {{ background: #F7DADA; }}
-    .coef-badge.neg {{ background: #DCEBFA; }}
+    .coef-badge.pos-dir {{ color: #FFFFFF; }}
+    .coef-badge.neg-dir {{ color: #FFFFFF; }}
+    .coef-badge.pos-zero {{ color: #DC2626; }}
+    .coef-badge.neg-zero {{ color: #0433FF; }}
+    .coef-badge.pos-sig-1 {{ background: #EFC4C4; }}
+    .coef-badge.pos-sig-2 {{ background: #F4A7A7; }}
+    .coef-badge.pos-sig-3 {{ background: #FF6B5C; }}
+    .coef-badge.neg-sig-1 {{ background: #B8D0F0; }}
+    .coef-badge.neg-sig-2 {{ background: #A8C7F5; }}
+    .coef-badge.neg-sig-3 {{ background: #66A3FF; }}
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
     .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
     .coef-val {{ color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; font-size: 10.5px; letter-spacing: 0; min-width: 0; }}
     .coef-val.placeholder {{ color: var(--muted-2); }}
     .coef-val.pos {{ color: #B91C1C; }}
-    .coef-val.neg {{ color: #1D4ED8; }}
+    .coef-val.neg {{ color: #0433FF; }}
     .coef-p {{ display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; justify-content: flex-end; min-width: 0; white-space: nowrap; }}
     .coef-p.placeholder {{ color: var(--muted-2); }}
     .coef-p .coef-stars {{ font-weight: 700; letter-spacing: 0; font-size: 11px; color: var(--ink-2); }}
@@ -1120,9 +1128,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     </div>
     <span class="rm-divider"></span>
     <span class="rm-lbl">Significance</span>
-    <span class="rm-chip on" data-sig="3"><i style="background:#B91C1C"></i>p&lt;.01</span>
-    <span class="rm-chip on" data-sig="2"><i style="background:#15803D"></i>p&lt;.05</span>
-    <span class="rm-chip on" data-sig="1"><i style="background:#1D4ED8"></i>p&lt;.10</span>
+    <span class="rm-chip on" data-sig="3"><i style="background:#FF2600"></i>p&lt;.01</span>
+    <span class="rm-chip on" data-sig="2"><i style="background:#00F900"></i>p&lt;.05</span>
+    <span class="rm-chip on" data-sig="1"><i style="background:#0433FF"></i>p&lt;.10</span>
     <span class="rm-chip on" data-sig="0"><i style="background:#111827"></i>n.s.</span>
     <span class="rm-divider"></span>
     <span class="rm-lbl">CI bands</span>
@@ -1200,14 +1208,20 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const ROW_H       = {row_h};
   const TOTAL_H     = {total_h};
   const X_STEP      = {x_step};
+  const STAR_CELL_GAP = {star_cell_gap};
+  const STAR_CELL_SIZE = {star_cell_size!r};
   const COEF_LO     = {clo!r};
   const COEF_HI     = {chi!r};
   const OBS_MIN     = {obs_min_v!r};
   const OBS_MAX     = {obs_max_v!r};
   const OBS_MEAN    = {obs_mean_v!r};
 
-  const STAR_POS    = "#D98A8A";
-  const STAR_NEG    = "#7EA6D9";
+  const STAR_POS_LEVEL = ["", "#FCA5A5", "#F87171", "#FF2600"];
+  const STAR_NEG_LEVEL = ["", "#BFDBFE", "#60A5FA", "#0433FF"];
+  const STAR_ZERO_POS  = "#DC2626";
+  const STAR_ZERO_NEG  = "#0433FF";
+  const STAR_ZERO_BG   = "#E5E7EB";
+  const STAR_ZERO_STROKE = "#9CA3AF";
   const OBS_FILL    = "#9CA3AF";
   const SPECIAL_FULL    = "#FF2F92";
   const SPECIAL_NOTEST  = "#ff8c00";
@@ -1398,17 +1412,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       ctx.lineTo(rxR, gy);
       ctx.stroke();
     }}
-    // STARS center reference line, matching the COEF zero-line style
-    ctx.strokeStyle = '#EF4444';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 4]);
-    ctx.globalAlpha = 0.55;
-    ctx.beginPath();
-    ctx.moveTo(LEFT, STAR_Y + STAR_H / 2);
-    ctx.lineTo(rxR, STAR_Y + STAR_H / 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1.0;
     // MATRIX row separators
     for (let r = 0; r < MATRIX_CONTROLS.length; r++) {{
       const ry = MATRIX_Y + r * ROW_H;
@@ -1486,95 +1489,67 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   /* ── STARS panel ────────────────────────────────────────── */
   function drawStars(ctx, fc, lc) {{
-    const cz = STAR_Y + STAR_H / 2;  // zero center
-    const drawCompactZeroRun = (startCol, endCol, y, h, color, alpha) => {{
-      if (startCol === null || endCol < startCol) return;
-      ctx.globalAlpha = alpha;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = h;
-      ctx.setLineDash([3.2, 2.2]);
-      const x0 = colLeft(startCol) - state.scrollX;
-      const x1 = colLeft(endCol + 1) - state.scrollX;
-      ctx.beginPath();
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }};
-    let zeroRunStart = null;
-    let zeroRunEnd = -1;
-    let zeroRunY = 0;
-    let zeroRunH = 0;
-    let zeroRunColor = '';
-    let zeroRunAlpha = 1.0;
-    const flushZeroRun = () => {{
-      drawCompactZeroRun(zeroRunStart, zeroRunEnd, zeroRunY, zeroRunH, zeroRunColor, zeroRunAlpha);
-      zeroRunStart = null;
-      zeroRunEnd = -1;
-    }};
     for (let col = fc; col <= lc; col++) {{
       const rec = records[sortedOrder[col]];
       const dimmed = isDimmed(rec);
       const x = colX(col) - state.scrollX;
       const step = xStep();
       const compact = state.mode === 'compact';
-      const isFull   = state.showFull   && rec.is_full;
-      const isNotest = state.showNotest && rec.is_no_controls_test;
-      const baseFill = rec.coef >= 0 ? STAR_POS : STAR_NEG;
-      const fill = compact ? baseFill : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : baseFill);
       ctx.globalAlpha = dimmed ? 0.13 : 1.0;
-      const dirn = rec.coef < 0 ? -1 : 1;
-      const bh = compact ? Math.max(1.1, Math.min(3, STAR_H / 20)) : 7;
-      const bw = compact ? Math.max(0.6, step) : Math.max(1, step * 0.72);
-      if (rec.star === 0) {{
-        const by = cz - dirn * 0.74 / 3 * (STAR_H / 2 - 9);
-        if (compact) {{
-          if (
-            zeroRunStart !== null
-            && col === zeroRunEnd + 1
-            && Math.abs(by - zeroRunY) < 0.01
-            && fill === zeroRunColor
-            && Math.abs((dimmed ? 0.13 : 1.0) - zeroRunAlpha) < 0.001
-          ) {{
-            zeroRunEnd = col;
-          }} else {{
-            flushZeroRun();
-            zeroRunStart = col;
-            zeroRunEnd = col;
-            zeroRunY = by;
-            zeroRunH = bh;
-            zeroRunColor = fill;
-            zeroRunAlpha = dimmed ? 0.13 : 1.0;
-          }}
+      const sign = rec.coef < 0 ? -1 : 1;
+      const starColors = sign < 0 ? STAR_NEG_LEVEL : STAR_POS_LEVEL;
+      if (compact) {{
+        const barW = Math.max(0.5, Math.min(step, step * 0.82));
+        const bx = colLeft(col) - state.scrollX + (step - barW) / 2;
+        const segGap = Math.max(0.35, Math.min(1.2, STAR_H * 0.045));
+        const segmentH = (STAR_H - 2 * segGap) / 3;
+        if (rec.star === 0) {{
+          const by = STAR_Y + STAR_H - segmentH;
+          ctx.fillStyle = STAR_ZERO_STROKE;
+          ctx.fillRect(bx, by, barW, segmentH / 2);
+          ctx.fillStyle = sign < 0 ? STAR_NEG_LEVEL[3] : STAR_POS_LEVEL[3];
+          ctx.fillRect(bx, by + segmentH / 2, barW, segmentH / 2);
           continue;
         }}
-        const rx = compact ? x - bw / 2 : x - step * 0.36;
-        const ry = by - bh / 2;
+        for (let blk = 0; blk < rec.star; blk++) {{
+          const by = STAR_Y + STAR_H - (blk + 1) * segmentH - blk * segGap;
+          ctx.fillStyle = starColors[blk + 1];
+          ctx.fillRect(bx, by, barW, segmentH);
+        }}
+        continue;
+      }}
+      const gap = STAR_CELL_GAP;
+      const side = STAR_CELL_SIZE;
+      const baseY = STAR_Y + STAR_H - gap;
+      if (rec.star === 0) {{
+        const cy0 = baseY - side / 2;
         ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(rx, ry, bw, bh, 1.6);
-        else ctx.rect(rx, ry, bw, bh);
+        ctx.arc(x, cy0, side / 2, 0, Math.PI * 2);
         ctx.fillStyle = '#FFFFFF';
         ctx.globalAlpha = 1.0;
         ctx.fill();
         ctx.globalAlpha = dimmed ? 0.13 : 1.0;
-        ctx.strokeStyle = fill;
+        ctx.strokeStyle = STAR_ZERO_STROKE;
         ctx.lineWidth = 1.65;
         ctx.stroke();
+        const innerR = Math.max(1.7, side * 0.42);
+        ctx.beginPath();
+        ctx.arc(x, cy0, innerR, 0, Math.PI * 2);
+        ctx.fillStyle = sign < 0 ? STAR_ZERO_NEG : STAR_ZERO_POS;
+        ctx.fill();
         continue;
       }}
-      if (compact) flushZeroRun();
-      ctx.fillStyle = fill;
       for (let blk = 0; blk < rec.star; blk++) {{
-        const t = dirn * (blk + 0.74) / 3;
-        const by = cz - t * (STAR_H / 2 - 9);
+        const cyDot = baseY - (blk + 0.5) * side - blk * gap;
         ctx.beginPath();
-        const rx = compact ? x - bw / 2 : x - step * 0.36, ry = by - bh / 2;
-        if (!compact && ctx.roundRect) ctx.roundRect(rx, ry, bw, bh, 1);
-        else ctx.rect(rx, ry, bw, bh);
+        ctx.arc(x, cyDot, side / 2, 0, Math.PI * 2);
+        ctx.fillStyle = starColors[blk + 1];
         ctx.fill();
+        ctx.strokeStyle = 'rgba(17,24,39,.08)';
+        ctx.lineWidth = 0.55;
+        ctx.stroke();
       }}
     }}
-    if (state.mode === 'compact') flushZeroRun();
     ctx.globalAlpha = 1.0;
   }}
 
@@ -1969,13 +1944,10 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const sign = coef < 0 ? -1 : 1;
     const signedLevel = sign * level;
     const label = level === 0 ? `0${{sign < 0 ? '-' : '+'}}` : `${{signedLevel > 0 ? '+' : ''}}${{signedLevel}}`;
-    const bgClass = level === 0 ? 'zero' : sign < 0 ? 'neg' : 'pos';
-    const colorByLevel = {{
-      '-3': '#1E3A8A', '-2': '#1D4ED8', '-1': '#60A5FA',
-      '0-': '#4B5563', '0+': '#4B5563',
-      '+1': '#FCA5A5', '+2': '#DC2626', '+3': '#7F1D1D',
-    }};
-    return `<span class="coef-badge ${{bgClass}}" style="color:${{colorByLevel[label] || '#4B5563'}}">${{label}}</span>`;
+    const badgeClass = level === 0
+      ? `${{sign < 0 ? 'neg' : 'pos'}}-zero zero`
+      : `${{sign < 0 ? 'neg' : 'pos'}}-dir ${{sign < 0 ? 'neg' : 'pos'}}-sig-${{level}}`;
+    return `<span class="coef-badge ${{badgeClass}}">${{label}}</span>`;
   }}
 
   function showInfo(recIdx) {{
