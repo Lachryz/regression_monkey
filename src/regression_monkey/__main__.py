@@ -14,7 +14,7 @@ import itertools
 import pathlib
 import sys
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -25,7 +25,7 @@ from .engine import py as rm_py
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--engine", choices=["python", "stata", "r"], default="python")
+    parser.add_argument("--engine", choices=["stata", "r"], default="r")
     parser.add_argument("--data", metavar="FILE")
     parser.add_argument("--y", metavar="VAR", nargs="+")
     parser.add_argument("--x", metavar="VAR", nargs="+")
@@ -40,9 +40,6 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--Ind-FE", dest="ind_fe", default="ind", metavar="COL")
     parser.add_argument("--Time-FE", dest="time_fe", default="year", metavar="COL")
     parser.add_argument("--Region-FE", dest="region_fe", default=None, metavar="COL")
-    parser.add_argument("--fe", metavar="COL", nargs="+")
-    parser.add_argument("--clust", metavar="COL", nargs="+")
-    parser.add_argument("--gen-clust2", dest="gen_clust2", action="store_true")
     parser.add_argument("--output", default="outputs", metavar="DIR")
     parser.add_argument("--export-format", choices=["png", "html", "both"], default="png", help="导出格式：png、html 或 both")
     parser.add_argument("--dpi", default=150, type=int)
@@ -63,35 +60,12 @@ def _enabled_specs(args: argparse.Namespace) -> dict[str, bool]:
     return {name: bool(getattr(args, name, False)) for name in rm_py._ALL_SPEC_NAMES}
 
 
-def _spec_columns(spec_def: dict[str, Any], args: argparse.Namespace) -> tuple[list[str], list[str], str | None]:
-    var_map = {"firm": args.firm_fe, "ind": args.ind_fe, "time": args.time_fe}
-    if args.region_fe:
-        var_map["region"] = args.region_fe
-    fe_cols: list[str] = []
-    for key in spec_def["fe_keys"]:
-        if key == "_ind_time":
-            fe_cols.append(f"_spec_{args.ind_fe}_{args.time_fe}")
-        elif key == "_region_time":
-            fe_cols.append(f"_spec_{args.region_fe}_{args.time_fe}")
-        else:
-            fe_cols.append(var_map[key])
-    clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
-    vce_label = "robust" if spec_def["vce"] == "robust" else None
-    return fe_cols, clust_cols, vce_label
-
-
 def _drawable_auto_specs(spec_flags: dict[str, bool], region_fe: str | None) -> list[dict[str, Any]]:
     return [
         spec_def for spec_def in rm_py._SPEC_CATALOG
         if spec_flags.get(spec_def["name"], False)
         and not (spec_def["needs_region"] and region_fe is None)
     ]
-
-
-def _manual_plot_group(fe_cols: list[str], clust_cols: list[str]) -> str:
-    fe_part = "_".join(rm_common._safe_path_part(col) for col in fe_cols)
-    clust_part = "_".join(rm_common._safe_path_part(col) for col in clust_cols) if clust_cols else "robust"
-    return f"manual_ab_{fe_part}_cl_{clust_part}"
 
 
 def _matrix_alternative_groups(
@@ -262,181 +236,6 @@ class _PlotProgressEstimator:
         return remaining_seconds
 
 
-def _run_python_pair(
-    *,
-    df: pd.DataFrame,
-    args: argparse.Namespace,
-    y_var: str,
-    x_var: str,
-    controls_test: rm_py.ControlSpecInput,
-    controls_must: rm_py.ControlSpecInput,
-    controls_test_flat: list[str],
-    controls_must_flat: list[str],
-    matrix_controls: list[str],
-    matrix_alt_groups: list[dict[str, Any]],
-    spec_flags: dict[str, bool],
-    is_auto: bool,
-    run_output_dir: pathlib.Path,
-    resolved_n_jobs: int,
-    on_plot_done: Callable[[pathlib.Path, tuple[str, ...], float], None] | None = None,
-    html_bundle_payloads: list[dict[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    pair_sig_rows: list[dict[str, Any]] = []
-    pair_total_specs = 0
-    pair_stem = f"{y_var}_{x_var}"
-
-    if is_auto:
-        fmt = {
-            "firm": args.firm_fe,
-            "ind": args.ind_fe,
-            "time": args.time_fe,
-            "region": args.region_fe or "region",
-        }
-        enabled_spec_defs = [
-            spec_def for spec_def in rm_py._SPEC_CATALOG
-            if spec_flags.get(spec_def["name"], False)
-        ]
-        for spec_def in enabled_spec_defs:
-            spec_name = spec_def["name"]
-            spec_t0 = perf_counter()
-            auto_results = rm_py.regression_monkey_auto(
-                df=df,
-                y=y_var,
-                x=x_var,
-                controls_test=controls_test,
-                controls_must=controls_must,
-                firm_fe=args.firm_fe,
-                ind_fe=args.ind_fe,
-                time_fe=args.time_fe,
-                region_fe=args.region_fe,
-                specs={name: name == spec_name for name in rm_py._ALL_SPEC_NAMES},
-                output_path=None,
-                dpi=args.dpi,
-                fig_width=args.fig_width,
-                n_jobs=resolved_n_jobs,
-                export_sig_table=False,
-                render_plot=False,
-            )
-            if not auto_results:
-                continue
-            _, records, _fig = auto_results[0]
-            spec_def = next(s for s in rm_py._SPEC_CATALOG if s["name"] == spec_name)
-            out_png = rm_common._render_output_path(
-                run_output_dir,
-                str(spec_def["tag"]),
-                f"{pair_stem}_{spec_def['tag']}.png",
-                args.export_format,
-            )
-            results_path = run_output_dir / f"{pair_stem}_{spec_def['tag']}_results.csv"
-            meta_path = run_output_dir / f"{pair_stem}_{spec_def['tag']}_plot_meta.json"
-            _write_and_plot(
-                records=records,
-                results_path=results_path,
-                meta_path=meta_path,
-                output_path=out_png,
-                meta={
-                    "engine": "python",
-                    "spec_name": spec_name,
-                    "y": y_var,
-                    "x": x_var,
-                    "controls_test_flat": controls_test_flat,
-                    "controls_must_flat": controls_must_flat,
-                    "matrix_controls": matrix_controls,
-                    "matrix_alt_groups": matrix_alt_groups,
-                    "show_special_markers": True,
-                    "fig_width": args.fig_width,
-                    "dpi": args.dpi,
-                    "order": args.order,
-                    "sort_by_p_mode": rm_py._order_uses_p_mode(args.order),
-                    "sort_by_signed_p": rm_py._order_uses_p_mode(args.order),
-                    "title_suffix": spec_def["help"].format(**fmt),
-                    "elapsed_seconds_preplot": perf_counter() - spec_t0,
-                    "export_format": args.export_format,
-                },
-                html_bundle_payloads=html_bundle_payloads,
-            )
-            _cleanup_plot_handoff(
-                results_path=results_path,
-                meta_path=meta_path,
-                keep_temp=bool(args.keep_temp),
-            )
-            if on_plot_done is not None:
-                on_plot_done(out_png, tuple(spec_def["fe_keys"]), perf_counter() - spec_t0)
-            fe_cols, clust_cols, vce_label = _spec_columns(spec_def, args)
-            rows = rm_py._build_sig_rows(records, y_var, x_var, controls_must_flat, controls_test_flat, fe_cols, clust_cols, vce_label)
-            pair_sig_rows.extend(rows)
-            pair_total_specs += len(records)
-        return pair_sig_rows, pair_total_specs
-
-    clust_cols = list(args.clust) if args.clust else []
-    if args.gen_clust2:
-        clust2_col = f"{args.fe[0]}_{args.fe[1]}"
-        df[clust2_col] = df[args.fe[0]].astype(str) + "_" + df[args.fe[1]].astype(str)
-        print(f"已生成聚类变量：{clust2_col}")
-        clust_cols.append(clust2_col)
-
-    spec_t0 = perf_counter()
-    records, _fig = rm_py.regression_monkey(
-        df=df,
-        y=y_var,
-        x=x_var,
-        controls_test=controls_test,
-        controls_must=controls_must,
-        fe_cols=list(args.fe),
-        clust_cols=clust_cols,
-        output_path=None,
-        dpi=args.dpi,
-        fig_width=args.fig_width,
-        n_jobs=resolved_n_jobs,
-        export_sig_table=False,
-        render_plot=False,
-    )
-    out_png = rm_common._render_output_path(
-        run_output_dir,
-        _manual_plot_group(list(args.fe), clust_cols),
-        f"{pair_stem}.png",
-        args.export_format,
-    )
-    results_path = run_output_dir / f"{pair_stem}_results.csv"
-    meta_path = run_output_dir / f"{pair_stem}_plot_meta.json"
-    _write_and_plot(
-        records=records,
-        results_path=results_path,
-        meta_path=meta_path,
-        output_path=out_png,
-        meta={
-            "engine": "python",
-            "spec_name": "manual",
-            "y": y_var,
-            "x": x_var,
-            "controls_test_flat": controls_test_flat,
-            "controls_must_flat": controls_must_flat,
-            "matrix_controls": matrix_controls,
-            "matrix_alt_groups": matrix_alt_groups,
-            "show_special_markers": True,
-            "fig_width": args.fig_width,
-            "dpi": args.dpi,
-            "order": args.order,
-            "sort_by_p_mode": rm_py._order_uses_p_mode(args.order),
-            "sort_by_signed_p": rm_py._order_uses_p_mode(args.order),
-            "title_suffix": f"manual FE = {', '.join(args.fe)}",
-            "elapsed_seconds_preplot": perf_counter() - spec_t0,
-            "export_format": args.export_format,
-        },
-        html_bundle_payloads=html_bundle_payloads,
-    )
-    _cleanup_plot_handoff(
-        results_path=results_path,
-        meta_path=meta_path,
-        keep_temp=bool(args.keep_temp),
-    )
-    if on_plot_done is not None:
-        on_plot_done(out_png, tuple(args.fe), perf_counter() - spec_t0)
-    pair_sig_rows.extend(rm_py._build_sig_rows(records, y_var, x_var, controls_must_flat, controls_test_flat, list(args.fe), clust_cols))
-    pair_total_specs += len(records)
-    return pair_sig_rows, pair_total_specs
-
-
 def _main_impl() -> None:
     try:
         cfg, cli_args = rm_common.load_toml_config(sys.argv[1:])
@@ -446,7 +245,7 @@ def _main_impl() -> None:
 
     parser = argparse.ArgumentParser(
         prog="regression_monkey",
-        description="规格曲线分析主入口：调度 Python/Stata/R 分析并独立绘图。",
+        description="规格曲线分析主入口：调度 Stata/R 分析并独立绘图。",
     )
     _add_common_args(parser)
     if cfg:
@@ -455,12 +254,14 @@ def _main_impl() -> None:
             "grouping_variable", "grouping_variable_by_ind_time",
             "grouping_variable_by_time", "grouping_variable_by_none",
             "output", "dpi", "fig_width", "n_jobs", "order", "p", "firm_fe", "ind_fe", "time_fe",
-            "region_fe", "fe", "clust", "gen_clust2", "stata_path", "rscript_path", "keep_temp", "drop_singletons", "export_format",
+            "region_fe", "stata_path", "rscript_path", "keep_temp", "drop_singletons", "export_format",
         } | set(rm_py._ALL_SPEC_NAMES)
         normalized = {k.lower(): v for k, v in cfg.items()}
         parser.set_defaults(**{k: v for k, v in normalized.items() if k in allowed})
 
     args = parser.parse_args(cli_args)
+    if args.engine not in {"stata", "r"}:
+        parser.error("engine 仅支持 'stata' 或 'r'；Python 估计引擎已移除。")
     try:
         args.order = rm_py._normalize_plot_order(args.order, p_alias=bool(args.p))
     except ValueError as exc:
@@ -468,8 +269,6 @@ def _main_impl() -> None:
     try:
         args.y = rm_py._expand_space_separated_names(args.y)
         args.x = rm_py._expand_space_separated_names(args.x)
-        args.fe = rm_py._expand_space_separated_names(args.fe)
-        args.clust = rm_py._expand_space_separated_names(args.clust)
         args.grouping_variable = rm_py._expand_space_separated_names(args.grouping_variable)
         args.grouping_variable_by_ind_time = rm_py._expand_space_separated_names(args.grouping_variable_by_ind_time)
         args.grouping_variable_by_time = rm_py._expand_space_separated_names(args.grouping_variable_by_time)
@@ -497,8 +296,8 @@ def _main_impl() -> None:
 
     spec_flags = _enabled_specs(args)
     is_auto = any(spec_flags.values())
-    if not is_auto and args.engine in {"stata", "r"}:
-        parser.error(f"{args.engine} 引擎仅支持自动规格模式，请至少启用一个 absorb_* flag。")
+    if not is_auto:
+        parser.error("Stata/R 引擎仅支持自动规格模式，请至少启用一个规格 flag。")
     grouping_specs = rm_py._collect_grouping_variable_specs(
         grouping_variable=list(args.grouping_variable or []),
         grouping_variable_by_ind_time=list(args.grouping_variable_by_ind_time or []),
@@ -507,15 +306,6 @@ def _main_impl() -> None:
     )
     if grouping_specs and args.engine != "stata":
         parser.error("grouping_variable_* 仅支持 --engine stata。")
-    if not is_auto:
-        if not args.fe:
-            parser.error("手动模式需要 --fe。")
-        if not args.clust and not args.gen_clust2:
-            parser.error("手动模式需要 --clust 或 --gen-clust2。")
-        if args.gen_clust2 and len(args.fe) < 2:
-            parser.error("--gen-clust2 需要至少提供 2 个 --fe 列。")
-        if grouping_specs:
-            parser.error("grouping_variable_* 仅支持自动规格模式。")
 
     data_path = pathlib.Path(args.data).expanduser()
     print(f"读取数据：{data_path}")
@@ -578,25 +368,14 @@ def _main_impl() -> None:
     combo_summaries: list[dict[str, Any]] = []
     planned_plot_fe_types: list[tuple[str, ...]] = []
 
-    if args.engine == "python":
-        if is_auto:
-            drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
-            planned_plot_fe_types = [
-                tuple(spec_def["fe_keys"])
-                for _combo in combos
-                for spec_def in drawable_specs
-            ]
-        else:
-            planned_plot_fe_types = [tuple(args.fe) for _combo in combos]
-    else:
-        drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
-        grouping_multiplier = max(1, len(grouping_specs))
-        planned_plot_fe_types = [
-            tuple(spec_def["fe_keys"])
-            for _combo in combos
-            for spec_def in drawable_specs
-            for _group in range(grouping_multiplier)
-        ]
+    drawable_specs = _drawable_auto_specs(spec_flags, args.region_fe)
+    grouping_multiplier = max(1, len(grouping_specs))
+    planned_plot_fe_types = [
+        tuple(spec_def["fe_keys"])
+        for _combo in combos
+        for spec_def in drawable_specs
+        for _group in range(grouping_multiplier)
+    ]
 
     plot_progress = _PlotProgressEstimator(planned_plot_fe_types)
     html_bundle_payloads: list[dict[str, Any]] | None = (
@@ -673,49 +452,25 @@ def _main_impl() -> None:
             on_item_ready=_plot_item,
         )
     else:
-        external_results = {}
+        raise AssertionError(f"unsupported engine: {args.engine}")
 
     for idx, (y_var, x_var) in enumerate(combos, 1):
         print(f"\n{'#'*60}")
         print(f"[{idx}/{len(combos)}]  Y = {y_var}  ×  X = {x_var}")
         print("#" * 60)
-        pair_t0 = perf_counter()
-
-        if args.engine == "python":
-            pair_rows, pair_total_specs = _run_python_pair(
-                df=df,
-                args=args,
-                y_var=y_var,
-                x_var=x_var,
-                controls_test=controls_test,
-                controls_must=controls_must,
-                controls_test_flat=controls_test_flat,
-                controls_must_flat=controls_must_flat,
-                matrix_controls=matrix_controls,
-                matrix_alt_groups=matrix_alt_groups,
-                spec_flags=spec_flags,
-                is_auto=is_auto,
-                run_output_dir=run_output_dir,
-                resolved_n_jobs=resolved_n_jobs,
-                on_plot_done=on_plot_done,
-                html_bundle_payloads=html_bundle_payloads,
-            )
-        else:
-            pair_rows = []
-            pair_total_specs = 0
-            pair_summary_rows = []
-            for item in external_results.get((y_var, x_var), []):
-                records = item["records"]
-                pair_rows.extend(item["sig_rows"])
-                if item.get("counts_as_base_spec", True):
-                    pair_total_specs += len(records)
-                    pair_summary_rows.extend(item.get("summary_sig_rows", item["sig_rows"]))
-            summary_rows = pair_summary_rows
+        pair_rows = []
+        pair_total_specs = 0
+        pair_summary_rows = []
+        for item in external_results.get((y_var, x_var), []):
+            records = item["records"]
+            pair_rows.extend(item["sig_rows"])
+            if item.get("counts_as_base_spec", True):
+                pair_total_specs += len(records)
+                pair_summary_rows.extend(item.get("summary_sig_rows", item["sig_rows"]))
+        summary_rows = pair_summary_rows
 
         all_sig_rows.extend(pair_rows)
         total_sig_specs += pair_total_specs
-        if args.engine == "python":
-            summary_rows = pair_rows
         combo_summaries.append({
             "y": y_var,
             "x": x_var,

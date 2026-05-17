@@ -26,7 +26,7 @@ When switching Y, X, or fixed-effect spec in the top selector bar, the other sel
 
 ![HTML COMPACT mode example](assets/compact-vision.png)
 
-Both PNG and HTML title metadata show the analysis engine (`python`, `stata`, or `r`) used for the exported figure.
+Both PNG and HTML title metadata show the analysis engine (`stata` or `r`) used for the exported figure.
 
 For external engines, elapsed-time metadata includes the engine handoff/setup step that belongs to the run, the model-estimation time, and the export rendering time reported in progress output.
 
@@ -95,12 +95,15 @@ export_format = "png"   # png | html | both
 dpi = 300
 fig_width = 14
 n_jobs = 0              # 0 = auto-parallel (up to 9 cores)
+engine = "r"            # r | stata
 
 Firm_FE   = "code"
 Ind_FE    = "ind"
 Time_FE   = "year"
 Region_FE = "pref"
 
+no_absorb_vce_robust                    = false
+no_absorb_vce_cluster_firm              = false
 absorb_firm_time_vce_cluster_firm    = true
 absorb_firm_indtime_vce_cluster_firm = true
 absorb_ind_time_vce_cluster_firm     = true
@@ -135,10 +138,12 @@ A variable that appears in both lists causes an immediate error.
 
 ## Predefined fixed-effect specs
 
-The auto mode selects from a catalog of 15 predefined FE + cluster combinations. Terminal output and spec headers show the Stata-style `absorb(...) vce(...)` form; internal keys use underscores.
+The auto mode selects from a catalog of predefined no-FE / FE + VCE combinations. Terminal output and spec headers show the Stata-style `noabsorb vce(...)` or `absorb(...) vce(...)` form; internal keys use underscores.
 
 | TOML key | Stata equivalent |
 | -------- | ---------------- |
+| `no_absorb_vce_cluster_firm` | `noabsorb vce(cluster firm)` |
+| `no_absorb_vce_robust` | `noabsorb vce(robust)` |
 | `absorb_firm_time_vce_cluster_firm` | `absorb(firm year) vce(cluster firm)` |
 | `absorb_firm_indtime_vce_cluster_firm` | `absorb(firm i.ind#i.year) vce(cluster firm)` |
 | `absorb_firm_regiontime_vce_cluster_firm` | `absorb(firm i.region#i.year) vce(cluster firm)` |
@@ -151,17 +156,7 @@ The auto mode selects from a catalog of 15 predefined FE + cluster combinations.
 | `absorb_firm_time_vce_robust` | `absorb(firm year) vce(robust)` |
 | *(and robust variants of the above)* | |
 
-Manual FE mode bypasses the catalog:
-
-```bash
-uv run regression-monkey --data panel.dta \
-    --y MPATT --x ln_info \
-    --controls-must Lev Size ROA \
-    --controls-test SOE Big4 Top1 \
-    --fe ind year --clust code
-```
-
-Add `--gen-clust2` to auto-generate a `fe[0]_fe[1]` second cluster column.
+The user-facing estimation engines are R/fixest and Stata/reghdfe. The old Python estimation engine and manual `--fe` mode are no longer supported by the main CLI.
 
 ## Output structure
 
@@ -236,7 +231,7 @@ engine = "r"
 rscript_path = "/path/to/Rscript"
 ```
 
-R mode currently supports catalog auto specs only, so enable at least one `absorb_*` flag such as `absorb_firm_time_vce_cluster_firm = true`. Subgroup `grouping_variable_*` plots remain Stata-only. `n_jobs = 0` uses 8 R worker processes by default; `--n-jobs N` or `n_jobs = N` sets the worker count explicitly.
+R mode currently supports catalog auto specs only, so enable at least one spec flag such as `no_absorb_vce_robust = true` or `absorb_firm_time_vce_cluster_firm = true`. Subgroup `grouping_variable_*` plots remain Stata-only. `n_jobs = 0` uses 8 R worker processes by default; `--n-jobs N` or `n_jobs = N` sets the worker count explicitly.
 
 ## Redrawing from saved results
 
@@ -271,4 +266,4 @@ Total spec count = product of per-slot factors:
 
 12 plain `controls_test` variables → 4 096 regressions per spec.
 
-The Python engine demeans Y, X, and all controls by the fixed effects once before enumeration (Frisch-Waugh-Lovell), then runs OLS on the residuals for each combination. Parallelism uses a flat chunk schedule to avoid nested `multiprocessing.Pool` overhead; Matplotlib is imported lazily in workers.
+R mode reuses cached demeaned samples for robust and one-way clustered specs, and falls back to exact per-spec `fixest::feols` for multi-way clustering. Stata mode delegates estimation to `reghdfe`; plotting remains handled by the shared PNG/HTML exporters.

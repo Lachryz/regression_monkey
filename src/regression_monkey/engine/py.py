@@ -1023,6 +1023,26 @@ def _run_flat_spec_chunk(args: tuple) -> tuple[str, list[SpecRecord], list[str],
 
 _SPEC_CATALOG: list[dict[str, Any]] = [
     {
+        "name":         "no_absorb_vce_cluster_firm",
+        "fe_keys":      [],
+        "cl_keys":      ["firm"],
+        "vce":          "cluster",
+        "derived":      [],
+        "needs_region": False,
+        "tag":          "no_absorb_cl_firm",
+        "help":         "noabsorb vce(cluster {firm}) - no fixed effects, clustered by firm",
+    },
+    {
+        "name":         "no_absorb_vce_robust",
+        "fe_keys":      [],
+        "cl_keys":      [],
+        "vce":          "robust",
+        "derived":      [],
+        "needs_region": False,
+        "tag":          "no_absorb_robust",
+        "help":         "noabsorb vce(robust) - no fixed effects with heteroskedasticity-robust SE",
+    },
+    {
         "name":         "absorb_firm_time_vce_cluster_firm",
         "fe_keys":      ["firm", "time"],
         "cl_keys":      ["firm"],

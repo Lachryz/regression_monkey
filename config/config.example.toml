@@ -3,8 +3,8 @@
 #
 # 运行：
 #   uv run regression_monkey.py regression_monkey_example.toml
-#   uv run regression_monkey.py regression_monkey_example.toml --engine stata
 #   uv run regression_monkey.py regression_monkey_example.toml --engine r
+#   uv run regression_monkey.py regression_monkey_example.toml --engine stata
 #
 # 说明：
 # - controls_must 中的普通变量会进入每个规格。
@@ -41,7 +41,7 @@ grouping_variable_by_none = []
 # ── 输出 ──────────────────────────────────────────────────────
 output = "outputs"
 export_format = "html"  # png / html / both
-engine = "python"       # python / stata / r
+engine = "r"            # r / stata
 dpi = 300
 fig_width = 14
 n_jobs = 0              # 0 表示自动，最多使用 9 核
@@ -56,8 +56,11 @@ Ind_FE = "industry"
 Time_FE = "year"
 Region_FE = "region"
 
-# ── 自动模式：FE + VCE 规格开关 ───────────────────────────────
+# ── 自动模式：无 FE / FE + VCE 规格开关 ──────────────────────
 # true 的每个规格会单独生成一张图。
+no_absorb_vce_cluster_firm = false
+no_absorb_vce_robust = false
+
 absorb_firm_time_vce_cluster_firm = true
 absorb_firm_time_vce_robust = false
 
@@ -80,6 +83,4 @@ absorb_ind_time_vce_robust = false
 absorb_ind_region_time_vce_cluster_ind = false
 absorb_ind_region_time_vce_robust = false
 
-# ── 手动 FE 模式示例 ──────────────────────────────────────────
-# 如果使用手动模式，请注释掉上面的 absorb_* 开关，改用 CLI：
-#   uv run regression_monkey.py regression_monkey_example.toml --fe industry year --clust firm_id
+# 主 CLI 已移除旧 Python 估计引擎和手动 --fe 模式；请选择一个或多个规格开关。

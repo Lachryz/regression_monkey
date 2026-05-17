@@ -24,5 +24,4 @@ ind_fe = "ind"
 time_fe = "year"
 region_fe = "pref"
 stata_path = "stata-mp"
-absorb_firm_time_vce_cluster_firm = true
-absorb_firm_indtime_vce_cluster_firm = true
+no_absorb_vce_cluster_firm = true

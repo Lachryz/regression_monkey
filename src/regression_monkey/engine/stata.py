@@ -112,6 +112,7 @@ def _spec_absorb_and_vce(spec_def: dict[str, Any], var_map: dict[str, str]) -> t
         raise ValueError(f"unknown FE key: {key}")
 
     absorb_expr = " ".join(_stata_fe_term(k) for k in spec_def["fe_keys"])
+    absorb_option = f"absorb({absorb_expr})" if absorb_expr else "noabsorb"
     clust_cols = [var_map[k] for k in spec_def["cl_keys"]]
     if spec_def["vce"] == "robust":
         vce = "vce(robust)"
@@ -121,7 +122,7 @@ def _spec_absorb_and_vce(spec_def: dict[str, Any], var_map: dict[str, str]) -> t
         vce = f"vce(cluster {' '.join(clust_cols)})"
     else:
         raise ValueError(f"unsupported vce setting: {spec_def}")
-    return absorb_expr, vce
+    return absorb_option, vce
 
 
 def _spec_fe_labels(spec_def: dict[str, Any], var_map: dict[str, str]) -> list[str]:
@@ -225,7 +226,7 @@ def _write_reghdfe_do(
     grouping_variable: str | None = None,
     grouping_scope: str = "by_ind_time",
 ) -> None:
-    absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
+    absorb_option, vce = _spec_absorb_and_vce(spec_def, var_map)
     subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
     _ = log_path
     lines = [
@@ -267,7 +268,7 @@ def _write_reghdfe_do(
                 f"* Run each spec on the full dataset currently in memory; do not pre-filter",
                 f"* by optional controls_test missingness outside reghdfe. Let e(sample)/e(N)",
                 f"* be determined by this exact RHS + absorb() combination.",
-                f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
+                f"capture reghdfe {y} {rhs}, {absorb_option} {vce}",
                 "if _rc == 0 {",
                 f"    scalar __b = _b[{x}]",
                 f"    scalar __se = _se[{x}]",
@@ -288,7 +289,7 @@ def _write_reghdfe_do(
             quantiles_lines = _grouping_quantiles_line(grouping_variable, grouping_scope, var_map)
             lines.extend([
                 f"* First run the all-sample spec to capture its exact e(sample).",
-                f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
+                f"capture reghdfe {y} {rhs}, {absorb_option} {vce}",
                 "if _rc == 0 {",
                 "    tempvar __rm_esample",
                 "    gen byte `__rm_esample' = e(sample)",
@@ -300,7 +301,7 @@ def _write_reghdfe_do(
                 f"    gen byte {b_group} = _temp - 1",
                 "    drop _temp",
                 "    forvalues __rm_g = 0/1 {",
-                f"        capture reghdfe {y} {rhs} if {b_group} == `__rm_g', absorb({absorb_expr}) {vce}",
+                f"        capture reghdfe {y} {rhs} if {b_group} == `__rm_g', {absorb_option} {vce}",
                 "        if _rc == 0 {",
                 f"            scalar __b = _b[{x}]",
                 f"            scalar __se = _se[{x}]",
@@ -342,7 +343,7 @@ def _write_interaction_reghdfe_do(
     spec_def: dict[str, Any],
     var_map: dict[str, str],
 ) -> None:
-    absorb_expr, vce = _spec_absorb_and_vce(spec_def, var_map)
+    absorb_option, vce = _spec_absorb_and_vce(spec_def, var_map)
     subsets = _enumerate_control_specs(controls_must_slots, controls_test_slots)
     _ = log_path, controls_must, controls_test
     interaction_term = f"c.{x}#c.{z}"
@@ -369,7 +370,7 @@ def _write_interaction_reghdfe_do(
         chosen_test_txt = "|".join(chosen_test)
         spec_name = spec_def["name"]
         lines.extend([
-            f"capture reghdfe {y} {rhs}, absorb({absorb_expr}) {vce}",
+            f"capture reghdfe {y} {rhs}, {absorb_option} {vce}",
             "if _rc == 0 {",
             f"    scalar __b = _b[{interaction_term}]",
             f"    scalar __se = _se[{interaction_term}]",
