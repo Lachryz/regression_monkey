@@ -528,14 +528,19 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
       else if (values.length) select.value = values[0];
     }}
 
-    function setSpecOptions(matches) {{
-      const old = specSel.value;
+    function setSpecOptions(matches, preferredSpec) {{
+      const oldId = specSel.value;
+      const oldView = VIEWS.find(v => v.id === oldId);
+      const oldSpec = preferredSpec !== undefined ? preferredSpec : (oldView ? oldView.spec : "");
       specSel.replaceChildren(...matches.map(v => {{
         const opt = option(v.id);
         opt.textContent = v.spec || "Spec";
         return opt;
       }}));
-      if (matches.some(v => v.id === old)) specSel.value = old;
+      const sameId = matches.find(v => v.id === oldId);
+      const sameSpec = matches.find(v => String(v.spec || "") === String(oldSpec || ""));
+      if (sameId) specSel.value = sameId.id;
+      else if (sameSpec) specSel.value = sameSpec.id;
       else if (matches.length) specSel.value = matches[0].id;
     }}
 
@@ -545,10 +550,13 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
 
     function renderSelectors(changed) {{
       if (!VIEWS.length) return;
-      if (changed !== "y") setOptions(ySel, uniq(VIEWS.map(v => v.y)));
+      const previousY = ySel.value;
+      const previousX = xSel.value;
+      const previousSpec = (VIEWS.find(v => v.id === specSel.value) || {{}}).spec || "";
+      if (changed !== "y") setOptions(ySel, uniq(VIEWS.map(v => v.y)), previousY);
       const xs = uniq(VIEWS.filter(v => String(v.y) === ySel.value).map(v => v.x));
-      if (changed !== "x") setOptions(xSel, xs);
-      setSpecOptions(filtered());
+      if (changed !== "x") setOptions(xSel, xs, previousX);
+      setSpecOptions(filtered(), previousSpec);
       renderFrame();
     }}
 

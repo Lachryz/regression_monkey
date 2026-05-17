@@ -18,6 +18,8 @@ The workflow and output design draw on Stata's `spec_curve` command and extend i
 
 `DETAIL` is the full interactive view. Hover highlights a specification across all panels, click pins the current specification, and the right details panel lists included controls in input order with per-control statistics. COEF confidence bands are drawn as per-specification slices for a finer PNG-like edge texture; STARS uses COEF-style round points stacked from bottom to top.
 
+When switching Y, X, or fixed-effect spec in the top selector bar, the other selectors keep their current value when that value is still available; fixed-effect specs are preserved by matching the displayed spec label across Y/X combinations.
+
 ![HTML DETAIL mode example](assets/detail-vision.png)
 
 `COMPACT` is the dense overview view for large specification sets. It hides the right details panel, disables central-chart hover/click selection, caps the column width at the 8192-specification baseline, and allows horizontal scrolling when the compact plot is wider than the viewport. After rendering, the compact chart is cached as one bitmap and scrolling redraws only the visible slice; sorting, filter chips, guide chips, CI chips, and viewport resizing rebuild that cache. STARS uses segmented CONTROL-like color bars whose heights encode significance level, CONTROL and OBS use thin square bars, and compact COEF points scale to the compact baseline column width.
