@@ -116,12 +116,33 @@ def _record_payload(
         "obs": int(record["obs"]),
         "is_full": bool(record["is_full"]),
         "is_no_controls_test": not bool(record["controls_test"]),
+        "is_best_test": False,
         "star": _star_level(float(record["p_value"])),
         "color": _point_color(float(record["p_value"])),
         "controls_all": sorted(record["controls_all"]),
         "included_matrix_controls": included,
         "control_stats": list(record.get("control_stats", [])),
     }
+
+
+def _mark_best_test_record(payload: dict[str, Any]) -> None:
+    records = list(payload.get("records", []))
+    controls_test_names = set(_payload_controls_test_names(payload))
+    for record in records:
+        record["is_best_test"] = False
+    three_star_records = [record for record in records if int(record.get("star", 0)) == 3]
+    if not three_star_records or any(bool(record.get("is_full")) for record in three_star_records):
+        return
+
+    def candidate_key(record: dict[str, Any]) -> tuple[int, float, int]:
+        included = set(record.get("included_matrix_controls", []))
+        test_count = len(included & controls_test_names)
+        p_value = float(record.get("p_value", float("inf")))
+        index = int(record.get("index", 0))
+        return (-test_count, p_value, index)
+
+    best = min(three_star_records, key=candidate_key)
+    best["is_best_test"] = True
 
 
 def _display_subtitle(value: Any) -> str:
@@ -501,7 +522,7 @@ def _build_bundle_html(payloads: list[dict[str, Any]]) -> str:
     <div class="bundle-spacer"></div>
     <div id="bundleCount" class="bundle-count"></div>
   </div>
-  <iframe id="rmFrame" title="Regression Monkey chart"></iframe>
+  <iframe id="rmFrame" title="Regression Monkey chart" allow="clipboard-write"></iframe>
   <script>
     const VIEWS = {data_json};
     const ySel = document.getElementById("bundleY");
@@ -820,6 +841,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
     alt_markers_html = "\n".join(alt_marker_items)
 
+    _mark_best_test_record(payload)
+
     # ── Compress payload JSON ──────────────────────────────────────────────────
     json_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     compressed = base64.b64encode(_zlib.compress(json_bytes, level=9)).decode("ascii")
@@ -1063,13 +1086,27 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .panel-placeholder {{ padding: 32px 16px; color: var(--muted-2); font-size: 11px; text-align: center; line-height: 1.7; }}
     .panel-head {{
       display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
       padding: 10px 14px 8px; border-bottom: 1px solid var(--line);
     }}
+    .panel-head-left {{ display: inline-flex; align-items: center; gap: 8px; min-width: 0; }}
     .panel-title {{ font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--ink); }}
+    .panel-copy {{
+      border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2);
+      border-radius: 3px; padding: 2px 6px;
+      font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .04em;
+      cursor: pointer; line-height: 1.2;
+    }}
+    .panel-copy:hover {{ background: #E5E7EB; color: var(--ink); }}
+    .panel-copy:disabled {{ opacity: .45; cursor: default; background: var(--bg-2); color: var(--muted-2); }}
+    .panel-copy:disabled:hover {{ background: var(--bg-2); color: var(--muted-2); }}
+    .panel-copy:active {{ transform: translateY(1px); }}
+    .panel-copy.copied {{ color: #7C3AED; border-color: rgba(124,58,237,.35); background: rgba(124,58,237,.08); }}
     .panel-sig {{
       display: inline-flex; align-items: center;
       padding: 1px 7px; border-radius: 99px;
       font-size: 10px; font-weight: 600; letter-spacing: .01em;
+      white-space: nowrap;
     }}
     .panel-table {{
       display: grid; grid-template-columns: auto 1fr;
@@ -1101,10 +1138,32 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       padding: 4px; border-radius: 3px;
       font-family: var(--mono); font-size: 10.5px; line-height: 1.25;
       transition: background .12s;
+      cursor: pointer;
     }}
     .coef-row + .coef-row {{ border-top: 1px dotted var(--line); }}
     .coef-row:hover {{ background: var(--bg-2); }}
+    .coef-row.filter-selected {{ background: rgba(124,58,237,.11); box-shadow: inset 0 0 0 1px rgba(124,58,237,.28); }}
+    .coef-row.filter-selected .coef-name {{ color: #7C3AED; font-weight: 700; }}
     .coef-row.is-test .coef-name {{ font-weight: 600; }}
+    .coef-filter-bar {{
+      grid-column: 1 / -1;
+      display: none; align-items: center; gap: 6px; flex-wrap: wrap;
+      padding: 2px 0 6px; margin-bottom: 2px;
+      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
+    }}
+    .coef-filter-bar.has-filters {{ display: flex; }}
+    .coef-filter-chip {{
+      display: inline-flex; align-items: center; gap: 4px;
+      border: 1px solid rgba(124,58,237,.22); background: rgba(124,58,237,.08);
+      color: #5B21B6; border-radius: 999px; padding: 1px 6px;
+      max-width: 118px;
+    }}
+    .coef-filter-chip span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .coef-filter-clear {{
+      border: 0; background: transparent; color: var(--muted-2);
+      font-family: var(--mono); font-size: 9.5px; padding: 1px 4px; cursor: pointer;
+    }}
+    .coef-filter-clear:hover {{ color: var(--ink); }}
     .coef-name-wrap {{ display: inline-flex; align-items: center; gap: 6px; min-width: 0; }}
     .coef-badge {{
       width: 22px; height: 18px; border-radius: 3px;
@@ -1126,7 +1185,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .coef-badge.pos-sig-1, .coef-badge.neg-sig-1 {{ color: #111827; }}
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
+    .coef-badge.blank {{ background: #FFFFFF; color: transparent; border-color: #D1D5DB; }}
     .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
+    .coef-row.not-included .coef-name {{ color: var(--muted); font-weight: 500; }}
     .coef-val {{ color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; font-size: 10.5px; letter-spacing: 0; min-width: 0; }}
     .coef-val.placeholder {{ color: var(--muted-2); }}
     .coef-val.pos {{ color: #B91C1C; }}
@@ -1194,9 +1255,10 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     <span class="rm-chip on" data-ci="95"><i style="background:#6B7280;opacity:.7"></i>95%</span>
     <span class="rm-chip on" data-ci="99"><i style="background:#374151;opacity:.85"></i>99%</span>
     <span class="rm-divider"></span>
-    <span class="rm-lbl">Guides</span>
-    <span class="rm-chip on" data-special="full"><i style="background:#FF2F92"></i>ALL TEST</span>
-    <span class="rm-chip on" data-special="nocontrol"><i style="background:#ff8c00"></i>NO TEST</span>
+    <span class="rm-lbl">TEST GUIDES</span>
+    <span class="rm-chip on" data-special="full"><i style="background:#FF2F92"></i>all</span>
+    <span class="rm-chip on" data-special="nocontrol"><i style="background:#ff8c00"></i>no</span>
+    <span class="rm-chip on" data-special="besttest"><i style="background:#FACC15"></i>best</span>
   </div>
 </header>
 
@@ -1281,6 +1343,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const OBS_FILL    = "#9CA3AF";
   const SPECIAL_FULL    = "#FF2F92";
   const SPECIAL_NOTEST  = "#ff8c00";
+  const SPECIAL_BESTTEST = "#FACC15";
   const ACTIVE_COL  = "#7C3AED";
 
   const SIG_COLOR   = {sig_colors_js};
@@ -1355,12 +1418,15 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     sort: INITIAL_SORT,
     mode: INITIAL_MODE,
     sigFilter: new Set([0, 1, 2, 3]),
+    controlSigFilters: new Set(),
     showCI: {{ 99: true, 95: true, 90: true }},
     showFull: true,
     showNotest: true,
+    showBestTest: true,
     controlColor: INITIAL_CONTROL_COLOR,
     scrollX: 0,
   }};
+  const guideJumpCursor = {{ full: -1, nocontrol: -1, besttest: -1 }};
   function publishBundleState() {{
     try {{
       if (window.parent && window.parent !== window) {{
@@ -1376,7 +1442,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       // Standalone HTML has no parent bundle state.
     }}
   }}
-  let sortedOrder = [];  // indices into records[]
+  let sortedOrder = [];   // all record indices after current sort
+  let visibleOrder = [];  // filtered record indices after current sort
   let activeIdx = -1;
   let pinnedIdx = -1;
 
@@ -1432,6 +1499,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   resizeCanvas();
 
   /* ── Sort ───────────────────────────────────────────────── */
+  function updateVisibleOrder() {{
+    visibleOrder = sortedOrder.filter(idx => passesControlSigFilters(records[idx]));
+  }}
+
+  function displayN() {{
+    return visibleOrder.length;
+  }}
+
   function reSort() {{
     sortedOrder = records.map((_, i) => i);
     if (state.sort === 'coef') {{
@@ -1446,24 +1521,26 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     }} else {{
       sortedOrder.sort((a, b) => records[a].obs - records[b].obs);
     }}
+    updateVisibleOrder();
   }}
   reSort();
 
   /* ── Run-length matrix colors (recomputed after every sort) ─ */
-  let runTValues = null; // Float32Array[N * nRows], index = col * nRows + row
+  let runTValues = null; // Float32Array[displayN() * nRows], index = col * nRows + row
 
   function computeRunColors() {{
     const controls = matrixControls();
     const nRows = controls.length;
-    if (nRows === 0 || N === 0) {{ runTValues = null; return; }}
-    runTValues = new Float32Array(N * nRows);
+    const nCols = displayN();
+    if (nRows === 0 || nCols === 0) {{ runTValues = null; return; }}
+    runTValues = new Float32Array(nCols * nRows);
     let maxRunLen = 1;
     const runs = [];
     for (let row = 0; row < nRows; row++) {{
       const name = controls[row];
       let start = null;
-      for (let col = 0; col <= N; col++) {{
-        const included = col < N && controlIncluded(records[sortedOrder[col]], name);
+      for (let col = 0; col <= nCols; col++) {{
+        const included = col < nCols && controlIncluded(records[visibleOrder[col]], name);
         if (included && start === null) {{ start = col; }}
         else if (!included && start !== null) {{
           const rlen = col - start;
@@ -1484,11 +1561,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const VIRT_BUF = 1500;
 
   function visibleRange() {{
+    const nCols = displayN();
     const vpW = chartVScroll.clientWidth - LEFT;
     const sc  = state.scrollX;
     const step = xStep();
     const fc  = Math.max(0, Math.floor((sc - VIRT_BUF) / step));
-    const lc  = Math.min(N - 1, Math.ceil((sc + vpW + VIRT_BUF) / step));
+    const lc  = Math.min(nCols - 1, Math.ceil((sc + vpW + VIRT_BUF) / step));
     return [fc, lc];
   }}
 
@@ -1498,14 +1576,15 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   function xStep() {{
-    if (state.mode !== 'compact' || N <= 0) return X_STEP;
-    const compactBase = Math.min(N, COMPACT_BASE_N);
+    const nCols = displayN();
+    if (state.mode !== 'compact' || nCols <= 0) return X_STEP;
+    const compactBase = Math.min(nCols, COMPACT_BASE_N);
     return Math.max(0.02, Math.min(X_STEP, plotViewportW() / Math.max(compactBase, 1)));
   }}
 
   function maxScrollX() {{
     const vpW = chartVScroll.clientWidth - LEFT;
-    return Math.max(0, N * xStep() - vpW);
+    return Math.max(0, displayN() * xStep() - vpW);
   }}
 
   function clampScrollX() {{
@@ -1521,6 +1600,36 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   function isDimmed(rec) {{
     return !state.sigFilter.has(rec.star);
+  }}
+
+  function specialVisible(kind) {{
+    if (state.mode === 'detail') return true;
+    if (kind === 'full') return state.showFull;
+    if (kind === 'nocontrol') return state.showNotest;
+    return state.showBestTest;
+  }}
+
+  function specialMatches(rec, kind) {{
+    if (kind === 'full') return rec.is_full;
+    if (kind === 'nocontrol') return rec.is_no_controls_test;
+    return rec.is_best_test;
+  }}
+
+  function controlStat(rec, name) {{
+    return (rec.control_stats || []).find(item => item.name === name);
+  }}
+
+  function controlIsSignificant(rec, name) {{
+    const stat = controlStat(rec, name);
+    return !!stat && starLevel(Number(stat.p_value)) > 0;
+  }}
+
+  function passesControlSigFilters(rec) {{
+    if (state.controlSigFilters.size === 0) return true;
+    for (const name of state.controlSigFilters) {{
+      if (!controlIsSignificant(rec, name)) return false;
+    }}
+    return true;
   }}
 
   /* ── Panel frames & grid (static background, full width) ── */
@@ -1593,12 +1702,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   function drawGuides(ctx, fc, lc) {{
     ctx.lineWidth = 1;
     for (let col = fc; col <= lc; col++) {{
-      const rec = records[sortedOrder[col]];
-      const isFull    = state.showFull    && rec.is_full;
-      const isNotest  = state.showNotest  && rec.is_no_controls_test;
-      if (!isFull && !isNotest) continue;
+      const rec = records[visibleOrder[col]];
+      if (!passesControlSigFilters(rec)) continue;
+      const isFull    = specialVisible('full') && rec.is_full;
+      const isNotest  = specialVisible('nocontrol') && rec.is_no_controls_test;
+      const isBestTest = specialVisible('besttest') && rec.is_best_test;
+      if (!isFull && !isNotest && !isBestTest) continue;
       const x = colX(col) - state.scrollX;
-      ctx.strokeStyle = isFull ? SPECIAL_FULL : SPECIAL_NOTEST;
+      ctx.strokeStyle = isFull ? SPECIAL_FULL : isBestTest ? SPECIAL_BESTTEST : SPECIAL_NOTEST;
       ctx.setLineDash([3, 2]);
       ctx.beginPath();
       ctx.moveTo(x, STAR_Y); ctx.lineTo(x, STAR_Y + STAR_H);
@@ -1621,7 +1732,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   /* ── STARS panel ────────────────────────────────────────── */
   function drawStars(ctx, fc, lc) {{
     for (let col = fc; col <= lc; col++) {{
-      const rec = records[sortedOrder[col]];
+      const rec = records[visibleOrder[col]];
+      if (!passesControlSigFilters(rec)) continue;
       const dimmed = isDimmed(rec);
       const x = colX(col) - state.scrollX;
       const step = xStep();
@@ -1693,7 +1805,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       if (!state.showCI[lvl.key]) continue;
       ctx.fillStyle = `rgba(17,24,39,${{lvl.alpha}})`;
       for (let col = fc; col <= lc; col++) {{
-        const rec = records[sortedOrder[col]];
+        const rec = records[visibleOrder[col]];
+        if (!passesControlSigFilters(rec)) continue;
         const x = colX(col) - state.scrollX;
         const yHi = cy(rec[lvl.hi]);
         const yLo = cy(rec[lvl.lo]);
@@ -1725,7 +1838,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       ? Math.max(0.55, Math.min(1.45, step * 0.58))
       : Math.max(1.6, Math.min(2.6, step * 0.36));
     for (let col = fc; col <= lc; col++) {{
-      const rec = records[sortedOrder[col]];
+      const rec = records[visibleOrder[col]];
+      if (!passesControlSigFilters(rec)) continue;
       const dimmed = isDimmed(rec);
       ctx.globalAlpha = dimmed ? 0.13 : 1.0;
       ctx.fillStyle = rec.color;
@@ -1753,12 +1867,14 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const name = controls[ci];
       const ry = MATRIX_Y + ci * ROW_H;
       for (let col = fc; col <= lc; col++) {{
-        const rec = records[sortedOrder[col]];
+        const rec = records[visibleOrder[col]];
+        if (!passesControlSigFilters(rec)) continue;
         if (!controlIncluded(rec, name)) continue;
         const dimmed = isDimmed(rec);
         ctx.globalAlpha = dimmed ? 0.13 : 1.0;
-        const isFull   = state.showFull   && rec.is_full;
-        const isNotest = state.showNotest && rec.is_no_controls_test;
+        const isFull   = specialVisible('full') && rec.is_full;
+        const isNotest = specialVisible('nocontrol') && rec.is_no_controls_test;
+        const isBestTest = specialVisible('besttest') && rec.is_best_test;
         const groupFill = ALT_GROUP_COLOR_MAP[name];
         const step = xStep();
         const compact = state.mode === 'compact';
@@ -1772,7 +1888,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         if (state.controlColor === 'stats') {{
           ctx.fillStyle = statsFill;
         }} else {{
-          ctx.fillStyle = compact ? (groupFill || normalFill) : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill));
+          ctx.fillStyle = compact ? (groupFill || normalFill) : (isFull ? SPECIAL_FULL : isBestTest ? SPECIAL_BESTTEST : isNotest ? SPECIAL_NOTEST : (groupFill || normalFill));
         }}
         const rw = compact ? Math.min(2.0, step * 0.55) : Math.max(1, step * 0.80);
         const rx = compact
@@ -1794,15 +1910,17 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const obsGap = 2.0;
     const obsMinH = 0.7;
     for (let col = fc; col <= lc; col++) {{
-      const rec = records[sortedOrder[col]];
+      const rec = records[visibleOrder[col]];
+      if (!passesControlSigFilters(rec)) continue;
       const dimmed = isDimmed(rec);
       const step = xStep();
       const compact = state.mode === 'compact';
-      const isFull   = state.showFull   && rec.is_full;
-      const isNotest = state.showNotest && rec.is_no_controls_test;
+      const isFull   = specialVisible('full') && rec.is_full;
+      const isNotest = specialVisible('nocontrol') && rec.is_no_controls_test;
+      const isBestTest = specialVisible('besttest') && rec.is_best_test;
       ctx.globalAlpha = dimmed ? 0.13 : 0.78;
-      ctx.fillStyle = compact ? OBS_FILL : (isFull ? SPECIAL_FULL : isNotest ? SPECIAL_NOTEST : OBS_FILL);
-      if (!compact && (isFull || isNotest)) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
+      ctx.fillStyle = compact ? OBS_FILL : (isFull ? SPECIAL_FULL : isBestTest ? SPECIAL_BESTTEST : isNotest ? SPECIAL_NOTEST : OBS_FILL);
+      if (!compact && (isFull || isNotest || isBestTest)) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
       const vy = obsY(rec.obs);
       let barY, barH;
       if (vy < baseline) {{
@@ -1841,19 +1959,23 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   function compactBitmapStateKey() {{
     const dpr = window.devicePixelRatio || 1;
     const sig = [...state.sigFilter].sort((a, b) => a - b).join('');
+    const controlSig = [...state.controlSigFilters].sort().join(',');
     const ci = [90, 95, 99].filter(k => state.showCI[k]).join('');
     return [
       chartVScroll.clientWidth,
       totalH(),
       dpr,
       N,
+      displayN(),
       xStep().toFixed(8),
       state.sort,
       state.controlColor,
       sig,
+      controlSig,
       ci,
       state.showFull ? 'F1' : 'F0',
       state.showNotest ? 'N1' : 'N0',
+      state.showBestTest ? 'B1' : 'B0',
     ].join('|');
   }}
 
@@ -1863,11 +1985,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   function compactBitmapCssWidth() {{
-    return Math.max(1, Math.ceil(LEFT + N * xStep() + RIGHT));
+    return Math.max(1, Math.ceil(LEFT + displayN() * xStep() + RIGHT));
   }}
 
   function canUseCompactBitmap() {{
-    if (state.mode !== 'compact' || N <= 0) return false;
+    if (state.mode !== 'compact' || displayN() <= 0) return false;
     const dpr = window.devicePixelRatio || 1;
     const w = compactBitmapCssWidth();
     const h = Math.max(1, Math.ceil(totalH()));
@@ -1902,12 +2024,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       bmpCtx.rect(LEFT, 0, cssPlotW, th);
       bmpCtx.clip();
       drawBackground(bmpCtx, cssW);
-      drawCIBands(bmpCtx, 0, N - 1);
-      drawStars(bmpCtx, 0, N - 1);
-      drawCoef(bmpCtx, 0, N - 1, cssW);
-      drawMatrix(bmpCtx, 0, N - 1);
-      drawObs(bmpCtx, 0, N - 1);
-      drawGuides(bmpCtx, 0, N - 1);
+      drawCIBands(bmpCtx, 0, displayN() - 1);
+      drawStars(bmpCtx, 0, displayN() - 1);
+      drawCoef(bmpCtx, 0, displayN() - 1, cssW);
+      drawMatrix(bmpCtx, 0, displayN() - 1);
+      drawObs(bmpCtx, 0, displayN() - 1);
+      drawGuides(bmpCtx, 0, displayN() - 1);
     }} finally {{
       bmpCtx.restore();
       state.scrollX = oldScrollX;
@@ -2039,7 +2161,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       ovCtx.fillRect(tx, py, tw, ph);
     }}
     // Active ring on coef point
-    const rec = records[sortedOrder[col]];
+    const rec = records[visibleOrder[col]];
     ovCtx.strokeStyle = ACTIVE_COL;
     ovCtx.lineWidth = 2;
     ovCtx.beginPath();
@@ -2057,8 +2179,46 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     const rect = cvOv.getBoundingClientRect();
     const worldX = (e.clientX - rect.left) + state.scrollX;
     const col = Math.floor((worldX - LEFT) / xStep());
-    if (col < 0 || col >= N) return -1;
+    if (col < 0 || col >= displayN()) return -1;
     return col;
+  }}
+
+  function nextVisibleCol(fromCol, dir) {{
+    for (let col = fromCol + dir; col >= 0 && col < displayN(); col += dir) {{
+      return col;
+    }}
+    return -1;
+  }}
+
+  function guideCols(kind) {{
+    const cols = [];
+    for (let col = 0; col < displayN(); col++) {{
+      const rec = records[visibleOrder[col]];
+      if (specialMatches(rec, kind)) cols.push(col);
+    }}
+    return cols;
+  }}
+
+  function revealCol(col) {{
+    const target = colX(col) - LEFT - plotViewportW() / 2;
+    state.scrollX = Math.max(0, Math.min(maxScrollX(), target));
+    requestRender();
+    updateScrollbar();
+  }}
+
+  function jumpToGuide(kind) {{
+    if (state.mode !== 'detail') return false;
+    const cols = guideCols(kind);
+    if (cols.length === 0) return true;
+    const currentPos = cols.indexOf(activeCol);
+    const basePos = currentPos >= 0 ? currentPos : guideJumpCursor[kind];
+    const nextPos = (basePos + 1 + cols.length) % cols.length;
+    const col = cols[nextPos];
+    guideJumpCursor[kind] = nextPos;
+    revealCol(col);
+    pinnedIdx = -1;
+    activate(col, true);
+    return true;
   }}
 
   /* ── Info panel update ──────────────────────────────────── */
@@ -2082,7 +2242,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       .replaceAll("'", '&#39;');
   }}
 
-  function controlBadge(stat) {{
+  function controlBadge(stat, blank = false) {{
+    if (blank) return `<span class="coef-badge blank">&nbsp;</span>`;
     if (!stat) return `<span class="coef-badge missing">--</span>`;
     const coef = Number(stat.coef);
     const level = starLevel(Number(stat.p_value));
@@ -2095,64 +2256,118 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     return `<span class="coef-badge ${{badgeClass}}">${{label}}</span>`;
   }}
 
-  function showInfo(recIdx) {{
-    const r = records[recIdx];
-    const star = r.star;
-    const ci99 = `[${{fmt(r.ci99_lo)}}, ${{fmt(r.ci99_hi)}}]`;
-    const ci95 = `[${{fmt(r.ci95_lo)}}, ${{fmt(r.ci95_hi)}}]`;
-    const ci90 = `[${{fmt(r.ci90_lo)}}, ${{fmt(r.ci90_hi)}}]`;
-    const adjR2 = (r.adj_r2 === null || r.adj_r2 === undefined) ? '-' : Number(r.adj_r2).toFixed(4);
-    const withinR2 = (r.within_r2 === null || r.within_r2 === undefined) ? '-' : Number(r.within_r2).toFixed(4);
-    const fStat = (r.f_stat === null || r.f_stat === undefined) ? '-' : Number(r.f_stat).toFixed(3);
+  function controlFilterBarHtml() {{
+    if (state.controlSigFilters.size === 0) return `<div class="coef-filter-bar"></div>`;
+    return `<div class="coef-filter-bar has-filters"><span>keep significant:</span>${{[...state.controlSigFilters].map(name => `<span class="coef-filter-chip" title="${{escHtml(name)}}"><span>${{escHtml(name)}}</span></span>`).join('')}}<button type="button" class="coef-filter-clear" data-filter-clear="1">clear</button></div>`;
+  }}
 
-    const includedControls = new Set(r.controls_all || []);
+  function copyTextFallback(text) {{
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    try {{
+      const ok = document.execCommand('copy');
+      if (!ok) throw new Error('execCommand copy returned false');
+      return Promise.resolve();
+    }} catch (err) {{
+      return Promise.reject(err);
+    }} finally {{
+      document.body.removeChild(ta);
+    }}
+  }}
+
+  function copyTextToClipboard(text) {{
+    if (navigator.clipboard && window.isSecureContext) {{
+      return navigator.clipboard.writeText(text).catch(() => copyTextFallback(text));
+    }}
+    return copyTextFallback(text);
+  }}
+
+  function showInfo(recIdx = -1) {{
+    const hasSelection = Number.isInteger(recIdx) && recIdx >= 0 && recIdx < records.length;
+    const r = hasSelection ? records[recIdx] : null;
+    const star = hasSelection ? r.star : 0;
+    const ci99 = hasSelection ? `[${{fmt(r.ci99_lo)}}, ${{fmt(r.ci99_hi)}}]` : '';
+    const ci95 = hasSelection ? `[${{fmt(r.ci95_lo)}}, ${{fmt(r.ci95_hi)}}]` : '';
+    const ci90 = hasSelection ? `[${{fmt(r.ci90_lo)}}, ${{fmt(r.ci90_hi)}}]` : '';
+    const adjR2 = hasSelection
+      ? ((r.adj_r2 === null || r.adj_r2 === undefined) ? '-' : Number(r.adj_r2).toFixed(4))
+      : '';
+    const withinR2 = hasSelection
+      ? ((r.within_r2 === null || r.within_r2 === undefined) ? '-' : Number(r.within_r2).toFixed(4))
+      : '';
+    const fStat = hasSelection
+      ? ((r.f_stat === null || r.f_stat === undefined) ? '-' : Number(r.f_stat).toFixed(3))
+      : '';
+
+    const includedControls = new Set(hasSelection ? (r.controls_all || []) : []);
     const testOrder = DATA.controlsTestNames || DATA.matrixControls || [];
     const mustOrder = DATA.controlsMustNames || [];
-    const testIncl = testOrder.filter(c => includedControls.has(c));
-    const mustIncl = mustOrder.filter(c => includedControls.has(c));
+    const testRows = testOrder;
+    const testIncl = hasSelection ? testOrder.filter(c => includedControls.has(c)) : [];
+    const mustIncl = hasSelection ? mustOrder.filter(c => includedControls.has(c)) : [];
     const orderedKnown = new Set([...testIncl, ...mustIncl]);
-    const extraIncl = (r.controls_all || []).filter(c => !orderedKnown.has(c));
-    const controlStats = new Map((r.control_stats || []).map(item => [item.name, item]));
+    const extraIncl = hasSelection ? (r.controls_all || []).filter(c => !orderedKnown.has(c)) : [];
+    const orderedControls = [...mustIncl, ...extraIncl, ...testIncl];
+    const copyControls = orderedControls.join(' ');
+    const controlStats = new Map(hasSelection ? (r.control_stats || []).map(item => [item.name, item]) : []);
 
-    const coefRow = (name, group) => {{
+    const coefRow = (name, group, included = true) => {{
       const stat = controlStats.get(name);
+      const selected = state.controlSigFilters.has(name);
+      const showValues = hasSelection && included;
       return `
-        <div class="coef-row ${{group === 'test' ? 'is-test' : ''}}">
-          <span class="coef-name-wrap">${{controlBadge(stat)}}<span class="coef-name" title="${{escHtml(name)}}">${{escHtml(name)}}</span></span>
-          ${{stat
+        <div class="coef-row ${{group === 'test' ? 'is-test' : ''}} ${{selected ? 'filter-selected' : ''}} ${{included ? '' : 'not-included'}}" data-filter-control="${{escHtml(name)}}" title="Click to filter by significant ${{escHtml(name)}}">
+          <span class="coef-name-wrap">${{controlBadge(stat, !hasSelection || !included)}}<span class="coef-name" title="${{escHtml(name)}}">${{escHtml(name)}}</span></span>
+          ${{showValues && stat
             ? `<span class="coef-val ${{Number(stat.coef) < 0 ? 'neg' : 'pos'}}">${{fmt(Number(stat.coef))}}</span>
                <span class="coef-p s${{starLevel(Number(stat.p_value))}}"><span class="coef-stars">${{starsForP(Number(stat.p_value))}}</span><span>${{Number(stat.p_value).toFixed(4)}}</span></span>`
-            : `<span class="coef-val placeholder">-</span><span class="coef-p placeholder"><span class="coef-stars">.</span><span>-</span></span>`
+            : hasSelection && included
+              ? `<span class="coef-val placeholder">-</span><span class="coef-p placeholder"><span class="coef-stars">.</span><span>-</span></span>`
+              : `<span class="coef-val placeholder"></span><span class="coef-p placeholder"><span class="coef-stars"></span><span></span></span>`
           }}
         </div>`;
     }};
 
-    const coefBlock = r.controls_all.length === 0
-      ? `<div class="coef-empty">No controls included in this specification.</div>`
-      : `<div class="panel-coefs-head"><span>Control coefficients</span><span class="panel-coefs-meta">${{testIncl.length}} test · ${{mustIncl.length + extraIncl.length}} must</span></div>
-         ${{mustIncl.length + extraIncl.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{mustIncl.length + extraIncl.length}})</span></div>${{[...mustIncl, ...extraIncl].map(c => coefRow(c, 'base')).join('')}}` : ''}}
-         ${{testIncl.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}})</span></div>${{testIncl.map(c => coefRow(c, 'test')).join('')}}` : ''}}`;
+    const mustRows = hasSelection ? [...mustIncl, ...extraIncl] : mustOrder;
+    const coefBlock = mustRows.length === 0 && testRows.length === 0
+      ? `<div class="coef-empty">${{hasSelection ? 'No controls included in this specification.' : 'No controls configured.'}}</div>`
+      : `<div class="panel-coefs-head"><span>Control coefficients</span><span class="panel-coefs-meta">${{testIncl.length}}/${{testRows.length}} test · ${{mustIncl.length + extraIncl.length}} must</span></div>
+         ${{mustRows.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{hasSelection ? mustIncl.length + extraIncl.length : mustRows.length}})</span></div>${{mustRows.map(c => coefRow(c, 'base', hasSelection)).join('')}}` : ''}}
+         ${{testRows.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}}/${{testRows.length}})</span></div>${{testRows.map(c => coefRow(c, 'test', includedControls.has(c))).join('')}}` : ''}}`;
+    const filterBar = controlFilterBarHtml();
+    const copyDisabled = hasSelection ? '' : ' disabled';
 
     panelCt.innerHTML = `
       <div class="panel-head">
-        <span class="panel-title">Spec #${{recIdx + 1}}&thinsp;/&thinsp;${{records.length}}</span>
-        <span class="panel-sig" style="background:${{SIG_BG[star]}};color:${{SIG_COLOR[star]}}">${{SIG_LABEL[star]}}</span>
+        <span class="panel-head-left">
+          <span class="panel-title">${{hasSelection ? `Spec #${{recIdx + 1}}&thinsp;/&thinsp;${{records.length}}` : `Spec -&thinsp;/&thinsp;${{records.length}}`}}</span>
+          <button type="button" class="panel-copy" data-copy-controls="${{escHtml(copyControls)}}" title="Copy included control names"${{copyDisabled}}>COPY</button>
+        </span>
+        <span class="panel-sig" style="background:${{hasSelection ? SIG_BG[star] : '#F3F4F6'}};color:${{hasSelection ? SIG_COLOR[star] : 'var(--muted-2)'}}">${{hasSelection ? SIG_LABEL[star] : '--'}}</span>
       </div>
       <div class="panel-table">
-        <span class="panel-key">coef</span>         <span class="panel-val">${{r.coef.toFixed(5)}}</span>
-        <span class="panel-key">std&nbsp;err</span>  <span class="panel-val">${{r.se.toFixed(5)}}</span>
-        <span class="panel-key">t&#8209;stat</span>  <span class="panel-val">${{r.t_value.toFixed(3)}}</span>
-        <span class="panel-key">p&#8209;value</span> <span class="panel-val">${{r.p_value.toFixed(4)}}</span>
+        <span class="panel-key">coef</span>         <span class="panel-val">${{hasSelection ? r.coef.toFixed(5) : ''}}</span>
+        <span class="panel-key">std&nbsp;err</span>  <span class="panel-val">${{hasSelection ? r.se.toFixed(5) : ''}}</span>
+        <span class="panel-key">t&#8209;stat</span>  <span class="panel-val">${{hasSelection ? r.t_value.toFixed(3) : ''}}</span>
+        <span class="panel-key">p&#8209;value</span> <span class="panel-val">${{hasSelection ? r.p_value.toFixed(4) : ''}}</span>
         <div class="panel-divider"></div>
         <span class="panel-key">90% CI</span>       <span class="panel-val">${{ci90}}</span>
         <span class="panel-key">95% CI</span>       <span class="panel-val">${{ci95}}</span>
         <span class="panel-key">99% CI</span>       <span class="panel-val">${{ci99}}</span>
         <div class="panel-divider"></div>
-        <span class="panel-key">obs</span>           <span class="panel-val">${{r.obs.toLocaleString()}}</span>
+        <span class="panel-key">obs</span>           <span class="panel-val">${{hasSelection ? r.obs.toLocaleString() : ''}}</span>
         <span class="panel-key">adj&nbsp;R²</span>   <span class="panel-val">${{adjR2}}</span>
         <span class="panel-key">within&nbsp;R²</span><span class="panel-val">${{withinR2}}</span>
         <span class="panel-key">F</span>             <span class="panel-val">${{fStat}}</span>
         <div class="panel-divider"></div>
+        ${{filterBar}}
         <div class="panel-coefs">${{coefBlock}}</div>
       </div>`;
 
@@ -2161,9 +2376,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
     // highlight control labels
     document.querySelectorAll('.ctrl-lbl').forEach(el => el.classList.remove('active-ctrl'));
-    const highlightedControls = state.controlColor === 'stats'
-      ? (r.controls_all || [])
-      : (r.included_matrix_controls || []);
+    const highlightedControls = hasSelection
+      ? (state.controlColor === 'stats' ? (r.controls_all || []) : (r.included_matrix_controls || []))
+      : [];
     highlightedControls.forEach(name => {{
       document.querySelectorAll(`.ctrl-lbl[data-control="${{escHtml(name)}}"]`)
         .forEach(el => el.classList.add('active-ctrl'));
@@ -2171,9 +2386,30 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
 
   function clearInfo() {{
-    panelPH.style.display = '';
-    panelCt.style.display = 'none';
     document.querySelectorAll('.ctrl-lbl').forEach(el => el.classList.remove('active-ctrl'));
+    showInfo();
+  }}
+
+  function refreshAfterControlSigFilterChange() {{
+    updateVisibleOrder();
+    clampScrollX();
+    invalidateCompactBitmap();
+    requestRender();
+    updateScrollbar();
+    const currentIdx = activeIdx;
+    if (currentIdx >= 0 && passesControlSigFilters(records[currentIdx])) {{
+      const col = visibleOrder.indexOf(currentIdx);
+      activeCol = col;
+      if (col >= 0 && state.mode !== 'compact') drawOverlay(col);
+      showInfo(currentIdx);
+    }} else {{
+      clearOverlay();
+      activeCol = -1;
+      activeIdx = -1;
+      pinnedIdx = -1;
+      if (currentIdx >= 0) showInfo(currentIdx);
+      else clearInfo();
+    }}
   }}
 
   /* ── Activation ─────────────────────────────────────────── */
@@ -2181,8 +2417,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   function activate(col, pin) {{
     if (state.mode === 'compact') return;
-    if (col < 0 || col >= N) return;
-    const recIdx = sortedOrder[col];
+    if (col < 0 || col >= displayN()) return;
+    const recIdx = visibleOrder[col];
     if (pinnedIdx >= 0 && !pin) return;
     activeCol = col;
     activeIdx = recIdx;
@@ -2235,7 +2471,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       deactivate();
       return;
     }}
-    const recIdx = sortedOrder[col];
+    const recIdx = visibleOrder[col];
     if (pinnedIdx === recIdx) {{
       // toggle off
       pinnedIdx = -1;
@@ -2243,6 +2479,38 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     }} else {{
       activate(col, true);
     }}
+  }});
+
+  panelCt.addEventListener('click', e => {{
+    const clearBtn = e.target.closest('[data-filter-clear]');
+    if (clearBtn) {{
+      state.controlSigFilters.clear();
+      refreshAfterControlSigFilterChange();
+      return;
+    }}
+    const copyBtn = e.target.closest('[data-copy-controls]');
+    if (copyBtn) {{
+      const text = copyBtn.dataset.copyControls || '';
+      copyTextToClipboard(text).then(() => {{
+        copyBtn.classList.add('copied');
+        copyBtn.textContent = 'COPIED';
+        window.setTimeout(() => {{
+          copyBtn.classList.remove('copied');
+          copyBtn.textContent = 'COPY';
+        }}, 900);
+      }}).catch(() => {{
+        copyBtn.textContent = 'FAILED';
+        window.setTimeout(() => {{ copyBtn.textContent = 'COPY'; }}, 1200);
+      }});
+      return;
+    }}
+    const row = e.target.closest('.coef-row[data-filter-control]');
+    if (!row) return;
+    const name = row.dataset.filterControl;
+    if (!name) return;
+    if (state.controlSigFilters.has(name)) state.controlSigFilters.delete(name);
+    else state.controlSigFilters.add(name);
+    refreshAfterControlSigFilterChange();
   }});
 
   /* ── Keyboard navigation ────────────────────────────────── */
@@ -2259,8 +2527,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {{
       e.preventDefault();
       const dir = e.key === 'ArrowRight' ? 1 : -1;
-      const cur = activeCol >= 0 ? activeCol : (dir > 0 ? -1 : N);
-      const next = Math.max(0, Math.min(N - 1, cur + dir));
+      const cur = activeCol >= 0 ? activeCol : (dir > 0 ? -1 : displayN());
+      const next = nextVisibleCol(cur, dir);
+      if (next < 0) return;
       activate(next, true);
       // scroll if needed
       const x = colX(next);
@@ -2305,7 +2574,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     clampScrollX();
     const trackW = sbTrack.clientWidth;
     const vpW = chartVScroll.clientWidth - LEFT;
-    const totalW = N * xStep();
+    const totalW = displayN() * xStep();
     if (totalW <= vpW) {{
       sbThumb.style.display = 'none';
       return;
@@ -2329,7 +2598,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!sbDrag) return;
     const trackW = sbTrack.clientWidth;
     const vpW = chartVScroll.clientWidth - LEFT;
-    const totalW = N * xStep();
+    const totalW = displayN() * xStep();
     const maxSc = maxScrollX();
     const thumbW = Math.max(20, trackW * (vpW / totalW));
     const dx = e.clientX - sbDrag.startX;
@@ -2343,7 +2612,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (e.target === sbThumb) return;
     const rect = sbTrack.getBoundingClientRect();
     const trackW = sbTrack.clientWidth;
-    const totalW = N * xStep();
+    const totalW = displayN() * xStep();
     const maxSc = maxScrollX();
     const frac = (e.clientX - rect.left) / trackW;
     state.scrollX = Math.max(0, Math.min(maxSc, frac * totalW));
@@ -2396,6 +2665,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!btn || btn.disabled) return;
     if (btn.dataset.v === 'compact' && !COMPACT_ENABLED) return;
     state.mode = btn.dataset.v || 'detail';
+    syncGuideChips();
     publishBundleState();
     state.scrollX = 0;
     invalidateCompactBitmap();
@@ -2464,13 +2734,28 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }});
 
   /* ── Guide chips ────────────────────────────────────────── */
+  function syncGuideChips() {{
+    document.querySelectorAll('.rm-chip[data-special]').forEach(chip => {{
+      const kind = chip.dataset.special;
+      const enabled = state.mode === 'detail'
+        || (kind === 'full' ? state.showFull : kind === 'nocontrol' ? state.showNotest : state.showBestTest);
+      chip.classList.toggle('on', enabled);
+    }});
+  }}
+  syncGuideChips();
+
   document.querySelectorAll('.rm-chip[data-special]').forEach(chip => {{
     chip.addEventListener('click', () => {{
       const kind = chip.dataset.special;
+      if (jumpToGuide(kind)) {{
+        syncGuideChips();
+        return;
+      }}
       const enabled = !chip.classList.contains('on');
       chip.classList.toggle('on', enabled);
       if (kind === 'full') state.showFull = enabled;
-      else state.showNotest = enabled;
+      else if (kind === 'nocontrol') state.showNotest = enabled;
+      else state.showBestTest = enabled;
       invalidateCompactBitmap();
       requestRender();
     }});
@@ -2479,6 +2764,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   /* ── Initial render ─────────────────────────────────────── */
   render();
   updateScrollbar();
+  clearInfo();
   document.body.classList.remove('rm-preinit');
 
   /* add ctrl-lbl active style */

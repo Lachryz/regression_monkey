@@ -1200,7 +1200,13 @@ _ALL_SPEC_NAMES: list[str] = [s["name"] for s in _SPEC_CATALOG]
 
 def _format_spec_display(spec_def: dict[str, Any], fmt: dict[str, str]) -> str:
     """Return terminal-facing Stata-style spec text without changing internal names."""
-    return str(spec_def["help"]).format(**fmt).split(" - ", 1)[0]
+    spec_text = str(spec_def["help"]).format(**fmt).split(" - ", 1)[0]
+    if spec_def.get("vce") == "robust":
+        se_text = "Robust"
+    else:
+        clust_cols = [fmt[key] for key in spec_def.get("cl_keys", [])]
+        se_text = f"cluster({' '.join(clust_cols)})" if clust_cols else "Robust"
+    return f"{spec_text} Std.Err.={se_text}"
 
 
 # ────────────────────────────────────────────────────────────
