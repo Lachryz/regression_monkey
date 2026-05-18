@@ -796,14 +796,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
             f'<div class="tick-lbl ctrl-lbl ctrl-lbl-gray{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
             f' style="top:{label_y_center - 7:.1f}px;{color_style}">{html.escape(str(name))}</div>'
         )
+    must_control_names = {str(name) for name in must_controls}
     for row, name in enumerate(sig_controls):
         ry = matrix_y + row * row_h
         label_y_center = ry + row_h * 0.65
         group_color = alt_group_color_by_control.get(str(name), "")
         color_style = f"color:{group_color};" if group_color else ""
         highlight_class = " starred" if name in starred_controls else ""
+        must_class = " is-must" if str(name) in must_control_names else ""
         control_label_items.append(
-            f'<div class="tick-lbl ctrl-lbl ctrl-lbl-sig{highlight_class}" data-control="{html.escape(str(name), quote=True)}"'
+            f'<div class="tick-lbl ctrl-lbl ctrl-lbl-sig{highlight_class}{must_class}" data-control="{html.escape(str(name), quote=True)}"'
             f' style="top:{label_y_center - 7:.1f}px;{color_style}">{html.escape(str(name))}</div>'
         )
 
@@ -1022,6 +1024,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     }}
     .ctrl-lbl.starred {{ background: #FEF3C7; border-radius: 2px; padding: 0 2px; }}
     .ctrl-lbl-sig {{ display: none; }}
+    .ctrl-lbl-sig.is-must::before {{
+      content: "";
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      margin-right: 4px;
+      border-radius: 50%;
+      background: currentColor;
+      vertical-align: 1px;
+    }}
     body.control-stats .ctrl-lbl-gray {{ display: none; }}
     body.control-stats .ctrl-lbl-sig {{ display: block; }}
     body.control-stats .alt-marker {{ display: none; }}
@@ -1079,7 +1091,8 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     #sb-thumb:active {{ cursor: grabbing; }}
     /* Info panel */
     .info-panel {{
-      width: 300px; flex-shrink: 0;
+      width: var(--info-panel-width, 300px); flex-shrink: 0;
+      max-width: calc(100vw - 220px);
       border-left: 1px solid var(--line);
       background: var(--bg); overflow-y: auto;
     }}
@@ -1102,6 +1115,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .panel-copy:disabled:hover {{ background: var(--bg-2); color: var(--muted-2); }}
     .panel-copy:active {{ transform: translateY(1px); }}
     .panel-copy.copied {{ color: #7C3AED; border-color: rgba(124,58,237,.35); background: rgba(124,58,237,.08); }}
+    .panel-clear {{
+      border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2);
+      border-radius: 3px; padding: 2px 6px;
+      font-family: var(--mono); font-size: 9px; font-weight: 700;
+      cursor: pointer; line-height: 1.2;
+    }}
+    .panel-clear:hover {{ background: #E5E7EB; color: var(--ink); }}
+    .panel-clear:disabled {{ opacity: .45; cursor: default; background: var(--bg-2); color: var(--muted-2); }}
+    .panel-clear:disabled:hover {{ background: var(--bg-2); color: var(--muted-2); }}
+    .panel-clear:active {{ transform: translateY(1px); }}
     .panel-sig {{
       display: inline-flex; align-items: center;
       padding: 1px 7px; border-radius: 99px;
@@ -1118,6 +1141,26 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .panel-controls {{ grid-column: 1 / -1; margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.45; }}
     .panel-controls em {{ font-style: normal; color: var(--ink-2); }}
     .panel-coefs {{ grid-column: 1 / -1; display: flex; flex-direction: column; margin-top: 2px; }}
+    .coef-filter-legend {{
+      grid-column: 1 / -1;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      padding: 2px 0 6px; margin-bottom: 2px;
+      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
+    }}
+    .coef-filter-legend-item {{
+      display: inline-flex; align-items: center; gap: 4px;
+      color: var(--ink-2);
+    }}
+    .coef-filter-swatch {{
+      display: inline-block;
+      width: 28px;
+      height: 13px;
+      border-radius: 3px;
+      vertical-align: -2px;
+    }}
+    .coef-filter-swatch.sig {{ background: rgba(124,58,237,.11); box-shadow: inset 0 0 0 1px rgba(124,58,237,.28); }}
+    .coef-filter-swatch.nonsig {{ background: #F3F4F6; box-shadow: inset 0 0 0 1px #D1D5DB; }}
+    .coef-filter-swatch.absent {{ background: #FFFFFF; box-shadow: inset 0 0 0 1px #111827; }}
     .panel-coefs-head {{
       display: flex; justify-content: space-between; align-items: baseline;
       font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
@@ -1142,29 +1185,16 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     }}
     .coef-row + .coef-row {{ border-top: 1px dotted var(--line); }}
     .coef-row:hover {{ background: var(--bg-2); }}
-    .coef-row.filter-selected {{ background: rgba(124,58,237,.11); box-shadow: inset 0 0 0 1px rgba(124,58,237,.28); }}
-    .coef-row.filter-selected .coef-name {{ color: #7C3AED; font-weight: 700; }}
+    .coef-row.filter-selected,
+    .coef-row.filter-sig {{ background: rgba(124,58,237,.11); box-shadow: inset 0 0 0 1px rgba(124,58,237,.28); }}
+    .coef-row.filter-selected .coef-name,
+    .coef-row.filter-sig .coef-name {{ color: #7C3AED; font-weight: 700; }}
+    .coef-row.filter-nonsig {{ background: #F3F4F6; box-shadow: inset 0 0 0 1px #D1D5DB; }}
+    .coef-row.filter-nonsig .coef-name {{ color: var(--ink-2); font-weight: 700; }}
+    .coef-row.filter-absent {{ background: #FFFFFF; box-shadow: inset 0 0 0 1px #111827; }}
+    .coef-row.filter-absent .coef-name {{ color: #111827; font-weight: 700; }}
     .coef-row.is-test .coef-name {{ font-weight: 600; }}
-    .coef-filter-bar {{
-      grid-column: 1 / -1;
-      display: none; align-items: center; gap: 6px; flex-wrap: wrap;
-      padding: 2px 0 6px; margin-bottom: 2px;
-      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
-    }}
-    .coef-filter-bar.has-filters {{ display: flex; }}
-    .coef-filter-chip {{
-      display: inline-flex; align-items: center; gap: 4px;
-      border: 1px solid rgba(124,58,237,.22); background: rgba(124,58,237,.08);
-      color: #5B21B6; border-radius: 999px; padding: 1px 6px;
-      max-width: 118px;
-    }}
-    .coef-filter-chip span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .coef-filter-clear {{
-      border: 0; background: transparent; color: var(--muted-2);
-      font-family: var(--mono); font-size: 9.5px; padding: 1px 4px; cursor: pointer;
-    }}
-    .coef-filter-clear:hover {{ color: var(--ink); }}
-    .coef-name-wrap {{ display: inline-flex; align-items: center; gap: 6px; min-width: 0; }}
+    .coef-name-wrap {{ display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: visible; }}
     .coef-badge {{
       width: 22px; height: 18px; border-radius: 3px;
       display: inline-flex; align-items: center; justify-content: center;
@@ -1186,7 +1216,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     .coef-badge.zero {{ background: #E5E7EB; }}
     .coef-badge.missing {{ background: #F3F4F6; color: var(--muted-2); }}
     .coef-badge.blank {{ background: #FFFFFF; color: transparent; border-color: #D1D5DB; }}
-    .coef-name {{ color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }}
+    .coef-name {{ display: block; min-width: 0; max-width: 100%; color: var(--ink); font-weight: 500; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; letter-spacing: 0; }}
     .coef-row.not-included .coef-name {{ color: var(--muted); font-weight: 500; }}
     .coef-val {{ color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; font-size: 10.5px; letter-spacing: 0; min-width: 0; }}
     .coef-val.placeholder {{ color: var(--muted-2); }}
@@ -1306,6 +1336,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   const DATA = await loadData();
   const records = DATA.records;
   const N = records.length;
+  const CONTROLS_TEST_NAME_SET = new Set(DATA.controlsTestNames || []);
   const COMPACT_THRESHOLD = {compact_threshold};
   const COMPACT_BASE_N = {compact_base_n};
   const COMPACT_ENABLED = {compact_enabled_js};
@@ -1418,7 +1449,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     sort: INITIAL_SORT,
     mode: INITIAL_MODE,
     sigFilter: new Set([0, 1, 2, 3]),
-    controlSigFilters: new Set(),
+    controlSigFilters: new Map(),
     showCI: {{ 99: true, 95: true, 90: true }},
     showFull: true,
     showNotest: true,
@@ -1444,6 +1475,9 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   }}
   let sortedOrder = [];   // all record indices after current sort
   let visibleOrder = [];  // filtered record indices after current sort
+  let dynamicBestTestIdx = -1;
+  const bestTestCache = new Map();
+  const BEST_TEST_CACHE_LIMIT = 512;
   let activeIdx = -1;
   let pinnedIdx = -1;
 
@@ -1461,6 +1495,28 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
   const mainCtx  = cvMain.getContext('2d');
   const ovCtx    = cvOv.getContext('2d');
+
+  function updateInfoPanelWidth() {{
+    const names = [
+      ...(DATA.controlsMustNames || []),
+      ...(DATA.controlsTestNames || []),
+      ...(DATA.matrixControls || []),
+      ...records.flatMap(r => r.controls_all || []),
+    ].map(v => String(v));
+    const uniqueNames = [...new Set(names)];
+    if (uniqueNames.length === 0) {{
+      document.documentElement.style.setProperty('--info-panel-width', '300px');
+      return;
+    }}
+    const measure = document.createElement('canvas').getContext('2d');
+    measure.font = '500 10.5px "Courier New", monospace';
+    const longest = Math.ceil(Math.max(...uniqueNames.map(name => measure.measureText(name).width)));
+    const selectedRowChrome = 22 + 6 + 24 + 68 + 74 + 8 + 28 + 18;
+    const headerMin = 300;
+    const maxByViewport = Math.max(300, window.innerWidth - 220);
+    const width = Math.min(maxByViewport, Math.max(headerMin, longest + selectedRowChrome));
+    document.documentElement.style.setProperty('--info-panel-width', `${{Math.ceil(width)}}px`);
+  }}
 
   /* ── Resize canvas to match container ──────────────────── */
   function resizeCanvas() {{
@@ -1496,11 +1552,20 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     updateScrollbar();
   }});
   ro.observe(chartVScroll);
+  updateInfoPanelWidth();
   resizeCanvas();
+  window.addEventListener('resize', () => {{
+    updateInfoPanelWidth();
+    invalidateCompactBitmap();
+    resizeCanvas();
+    requestRender();
+    updateScrollbar();
+  }});
 
   /* ── Sort ───────────────────────────────────────────────── */
   function updateVisibleOrder() {{
     visibleOrder = sortedOrder.filter(idx => passesControlSigFilters(records[idx]));
+    recomputeDynamicBestTest();
   }}
 
   function displayN() {{
@@ -1612,7 +1677,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   function specialMatches(rec, kind) {{
     if (kind === 'full') return rec.is_full;
     if (kind === 'nocontrol') return rec.is_no_controls_test;
-    return rec.is_best_test;
+    return isBestTestRecord(rec);
   }}
 
   function controlStat(rec, name) {{
@@ -1624,12 +1689,94 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     return !!stat && starLevel(Number(stat.p_value)) > 0;
   }}
 
+  function controlIsIncluded(rec, name) {{
+    return (rec.controls_all || []).includes(name);
+  }}
+
+  function controlIsNonsignificant(rec, name) {{
+    if (!controlIsIncluded(rec, name)) return false;
+    const stat = controlStat(rec, name);
+    return !stat || starLevel(Number(stat.p_value)) === 0;
+  }}
+
+  function passesControlFilterMode(rec, name, mode) {{
+    if (mode === 'sig') return controlIsSignificant(rec, name);
+    if (mode === 'nonsig') return controlIsNonsignificant(rec, name);
+    if (mode === 'absent') return !controlIsIncluded(rec, name);
+    return true;
+  }}
+
   function passesControlSigFilters(rec) {{
     if (state.controlSigFilters.size === 0) return true;
-    for (const name of state.controlSigFilters) {{
-      if (!controlIsSignificant(rec, name)) return false;
+    for (const [name, mode] of state.controlSigFilters) {{
+      if (!passesControlFilterMode(rec, name, mode)) return false;
     }}
     return true;
+  }}
+
+  function bestTestCandidateKey(recIdx) {{
+    const rec = records[recIdx];
+    const included = new Set(rec.included_matrix_controls || []);
+    let testCount = 0;
+    included.forEach(name => {{
+      if (CONTROLS_TEST_NAME_SET.has(name)) testCount++;
+    }});
+    return {{
+      testCount,
+      pValue: Number.isFinite(Number(rec.p_value)) ? Number(rec.p_value) : Number.POSITIVE_INFINITY,
+      index: Number.isFinite(Number(rec.index)) ? Number(rec.index) : recIdx,
+    }};
+  }}
+
+  function bestTestCacheKey() {{
+    const sig = [...state.sigFilter].sort((a, b) => a - b).join('');
+    const controlSig = [...state.controlSigFilters.entries()]
+      .map(([name, mode]) => `${{name}}:${{mode}}`)
+      .sort()
+      .join(',');
+    return `${{sig}}|${{controlSig}}`;
+  }}
+
+  function rememberBestTest(cacheKey, recIdx) {{
+    if (bestTestCache.size >= BEST_TEST_CACHE_LIMIT && !bestTestCache.has(cacheKey)) {{
+      bestTestCache.delete(bestTestCache.keys().next().value);
+    }}
+    bestTestCache.set(cacheKey, recIdx);
+  }}
+
+  function recomputeDynamicBestTest() {{
+    dynamicBestTestIdx = -1;
+    const cacheKey = bestTestCacheKey();
+    if (bestTestCache.has(cacheKey)) {{
+      dynamicBestTestIdx = bestTestCache.get(cacheKey);
+      return;
+    }}
+    if (!state.sigFilter.has(3)) {{
+      rememberBestTest(cacheKey, -1);
+      return;
+    }}
+    const threeStarIdxs = visibleOrder.filter(idx => Number(records[idx].star) === 3);
+    if (threeStarIdxs.length === 0) {{
+      rememberBestTest(cacheKey, -1);
+      return;
+    }}
+    if (threeStarIdxs.some(idx => !!records[idx].is_full)) {{
+      rememberBestTest(cacheKey, -1);
+      return;
+    }}
+    dynamicBestTestIdx = threeStarIdxs.reduce((bestIdx, idx) => {{
+      if (bestIdx < 0) return idx;
+      const a = bestTestCandidateKey(idx);
+      const b = bestTestCandidateKey(bestIdx);
+      if (a.testCount !== b.testCount) return a.testCount > b.testCount ? idx : bestIdx;
+      if (a.pValue !== b.pValue) return a.pValue < b.pValue ? idx : bestIdx;
+      return a.index < b.index ? idx : bestIdx;
+    }}, -1);
+    rememberBestTest(cacheKey, dynamicBestTestIdx);
+  }}
+
+  function isBestTestRecord(rec) {{
+    return dynamicBestTestIdx >= 0 && records[dynamicBestTestIdx] === rec;
   }}
 
   /* ── Panel frames & grid (static background, full width) ── */
@@ -1706,7 +1853,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       if (!passesControlSigFilters(rec)) continue;
       const isFull    = specialVisible('full') && rec.is_full;
       const isNotest  = specialVisible('nocontrol') && rec.is_no_controls_test;
-      const isBestTest = specialVisible('besttest') && rec.is_best_test;
+      const isBestTest = specialVisible('besttest') && isBestTestRecord(rec);
       if (!isFull && !isNotest && !isBestTest) continue;
       const x = colX(col) - state.scrollX;
       ctx.strokeStyle = isFull ? SPECIAL_FULL : isBestTest ? SPECIAL_BESTTEST : SPECIAL_NOTEST;
@@ -1874,7 +2021,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         ctx.globalAlpha = dimmed ? 0.13 : 1.0;
         const isFull   = specialVisible('full') && rec.is_full;
         const isNotest = specialVisible('nocontrol') && rec.is_no_controls_test;
-        const isBestTest = specialVisible('besttest') && rec.is_best_test;
+        const isBestTest = specialVisible('besttest') && isBestTestRecord(rec);
         const groupFill = ALT_GROUP_COLOR_MAP[name];
         const step = xStep();
         const compact = state.mode === 'compact';
@@ -1917,7 +2064,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       const compact = state.mode === 'compact';
       const isFull   = specialVisible('full') && rec.is_full;
       const isNotest = specialVisible('nocontrol') && rec.is_no_controls_test;
-      const isBestTest = specialVisible('besttest') && rec.is_best_test;
+      const isBestTest = specialVisible('besttest') && isBestTestRecord(rec);
       ctx.globalAlpha = dimmed ? 0.13 : 0.78;
       ctx.fillStyle = compact ? OBS_FILL : (isFull ? SPECIAL_FULL : isBestTest ? SPECIAL_BESTTEST : isNotest ? SPECIAL_NOTEST : OBS_FILL);
       if (!compact && (isFull || isNotest || isBestTest)) ctx.globalAlpha = dimmed ? 0.13 : 1.0;
@@ -1959,7 +2106,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
   function compactBitmapStateKey() {{
     const dpr = window.devicePixelRatio || 1;
     const sig = [...state.sigFilter].sort((a, b) => a - b).join('');
-    const controlSig = [...state.controlSigFilters].sort().join(',');
+    const controlSig = [...state.controlSigFilters.entries()].map(([name, mode]) => `${{name}}:${{mode}}`).sort().join(',');
     const ci = [90, 95, 99].filter(k => state.showCI[k]).join('');
     return [
       chartVScroll.clientWidth,
@@ -2256,11 +2403,6 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     return `<span class="coef-badge ${{badgeClass}}">${{label}}</span>`;
   }}
 
-  function controlFilterBarHtml() {{
-    if (state.controlSigFilters.size === 0) return `<div class="coef-filter-bar"></div>`;
-    return `<div class="coef-filter-bar has-filters"><span>keep significant:</span>${{[...state.controlSigFilters].map(name => `<span class="coef-filter-chip" title="${{escHtml(name)}}"><span>${{escHtml(name)}}</span></span>`).join('')}}<button type="button" class="coef-filter-clear" data-filter-clear="1">clear</button></div>`;
-  }}
-
   function copyTextFallback(text) {{
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -2320,11 +2462,12 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
 
     const coefRow = (name, group, included = true) => {{
       const stat = controlStats.get(name);
-      const selected = state.controlSigFilters.has(name);
+      const filterMode = state.controlSigFilters.get(name) || '';
+      const filterClass = filterMode ? `filter-${{filterMode}}` : '';
       const showValues = hasSelection && included;
       return `
-        <div class="coef-row ${{group === 'test' ? 'is-test' : ''}} ${{selected ? 'filter-selected' : ''}} ${{included ? '' : 'not-included'}}" data-filter-control="${{escHtml(name)}}" title="Click to filter by significant ${{escHtml(name)}}">
-          <span class="coef-name-wrap">${{controlBadge(stat, !hasSelection || !included)}}<span class="coef-name" title="${{escHtml(name)}}">${{escHtml(name)}}</span></span>
+        <div class="coef-row ${{group === 'test' ? 'is-test' : ''}} ${{filterClass}} ${{included ? '' : 'not-included'}}" data-filter-control="${{escHtml(name)}}" aria-label="Click to cycle filter for ${{escHtml(name)}}">
+          <span class="coef-name-wrap">${{controlBadge(stat, !hasSelection || !included)}}<span class="coef-name">${{escHtml(name)}}</span></span>
           ${{showValues && stat
             ? `<span class="coef-val ${{Number(stat.coef) < 0 ? 'neg' : 'pos'}}">${{fmt(Number(stat.coef))}}</span>
                <span class="coef-p s${{starLevel(Number(stat.p_value))}}"><span class="coef-stars">${{starsForP(Number(stat.p_value))}}</span><span>${{Number(stat.p_value).toFixed(4)}}</span></span>`
@@ -2341,14 +2484,15 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
       : `<div class="panel-coefs-head"><span>Control coefficients</span><span class="panel-coefs-meta">${{testIncl.length}}/${{testRows.length}} test · ${{mustIncl.length + extraIncl.length}} must</span></div>
          ${{mustRows.length ? `<div class="coef-group-label">MUST <span class="grp-count">(${{hasSelection ? mustIncl.length + extraIncl.length : mustRows.length}})</span></div>${{mustRows.map(c => coefRow(c, 'base', hasSelection)).join('')}}` : ''}}
          ${{testRows.length ? `<div class="coef-group-label">TEST <span class="grp-count">(${{testIncl.length}}/${{testRows.length}})</span></div>${{testRows.map(c => coefRow(c, 'test', includedControls.has(c))).join('')}}` : ''}}`;
-    const filterBar = controlFilterBarHtml();
     const copyDisabled = hasSelection ? '' : ' disabled';
+    const clearDisabled = state.controlSigFilters.size > 0 ? '' : ' disabled';
 
     panelCt.innerHTML = `
       <div class="panel-head">
         <span class="panel-head-left">
           <span class="panel-title">${{hasSelection ? `Spec #${{recIdx + 1}}&thinsp;/&thinsp;${{records.length}}` : `Spec -&thinsp;/&thinsp;${{records.length}}`}}</span>
           <button type="button" class="panel-copy" data-copy-controls="${{escHtml(copyControls)}}" title="Copy included control names"${{copyDisabled}}>COPY</button>
+          <button type="button" class="panel-clear" data-filter-clear="1" title="Clear control filters"${{clearDisabled}}>CLEAR</button>
         </span>
         <span class="panel-sig" style="background:${{hasSelection ? SIG_BG[star] : '#F3F4F6'}};color:${{hasSelection ? SIG_COLOR[star] : 'var(--muted-2)'}}">${{hasSelection ? SIG_LABEL[star] : '--'}}</span>
       </div>
@@ -2367,7 +2511,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         <span class="panel-key">within&nbsp;R²</span><span class="panel-val">${{withinR2}}</span>
         <span class="panel-key">F</span>             <span class="panel-val">${{fStat}}</span>
         <div class="panel-divider"></div>
-        ${{filterBar}}
+        <div class="coef-filter-legend" aria-label="Control filter legend">
+          <span class="coef-filter-legend-item"><span class="coef-filter-swatch sig"></span>sig</span>
+          <span class="coef-filter-legend-item"><span class="coef-filter-swatch nonsig"></span>no-sig</span>
+          <span class="coef-filter-legend-item"><span class="coef-filter-swatch absent"></span>no-control</span>
+        </div>
         <div class="panel-coefs">${{coefBlock}}</div>
       </div>`;
 
@@ -2508,8 +2656,11 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
     if (!row) return;
     const name = row.dataset.filterControl;
     if (!name) return;
-    if (state.controlSigFilters.has(name)) state.controlSigFilters.delete(name);
-    else state.controlSigFilters.add(name);
+    const mode = state.controlSigFilters.get(name);
+    if (!mode) state.controlSigFilters.set(name, 'sig');
+    else if (mode === 'sig') state.controlSigFilters.set(name, 'nonsig');
+    else if (mode === 'nonsig') state.controlSigFilters.set(name, 'absent');
+    else state.controlSigFilters.delete(name);
     refreshAfterControlSigFilterChange();
   }});
 
@@ -2716,6 +2867,7 @@ def _build_canvas_html(payload: dict[str, Any]) -> str:  # noqa: C901
         state.sigFilter.add(star);
       }}
       chip.classList.toggle('on', state.sigFilter.has(star));
+      recomputeDynamicBestTest();
       invalidateCompactBitmap();
       requestRender();
     }});
